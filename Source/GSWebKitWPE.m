@@ -37,6 +37,7 @@
 
 #import "GSWebKitWPE.h"
 #import "GSWebKitBackend.h"
+#import "GSWebKitInternal.h"
 #import <WebKit/WKWebViewConfiguration.h>
 #import <WebKit/WKPreferences.h>
 #import <WebKit/WKError.h>
@@ -69,6 +70,22 @@ static void GSWPE_OnNotifyProgress(GObject *src, GParamSpec *spec, gpointer ud);
 static void GSWPE_OnNotifyIsLoading(GObject *src, GParamSpec *spec, gpointer ud);
 static gboolean GSWPE_OnScriptDialog(WebKitWebView *view,
                                      WebKitScriptDialog *dialog, gpointer ud);
+static void GSWPE_OnMouseTargetChanged(WebKitWebView *view,
+                                       WebKitHitTestResult *hit,
+                                       guint modifiers,
+                                       gpointer ud);
+static gboolean GSWPE_OnRunFileChooser(WebKitWebView *view,
+                                       WebKitFileChooserRequest *request,
+                                       gpointer ud);
+static void     GSWPE_OnDownloadStarted(WebKitWebContext *ctx,
+                                        WebKitDownload *download,
+                                        gpointer ud);
+static gboolean GSWPE_OnDownloadDecideDestination(WebKitDownload *download,
+                                                  const gchar *suggested,
+                                                  gpointer ud);
+static void     GSWPE_OnDownloadFinished(WebKitDownload *download, gpointer ud);
+static void     GSWPE_OnDownloadFailed(WebKitDownload *download,
+                                        GError *error, gpointer ud);
 static void GSWPE_OnScriptMessageReceived(WebKitUserContentManager *mgr,
                                           JSCValue *value, gpointer ud);
 static void GSWPE_OnEvaluateJavaScriptFinished(GObject *source,
@@ -170,6 +187,9 @@ struct GSWPE_PendingEval {
   gulong                    _signalNotifyProgress;
   gulong                    _signalNotifyIsLoading;
   gulong                    _signalScriptDialog;
+  gulong                    _signalMouseTarget;
+  gulong                    _signalRunFileChooser;
+  gulong                    _signalDownloadStarted;
 
   NSMutableDictionary      *_handlerSignalIds;   /* name -> NSNumber(gulong) */
 
@@ -219,6 +239,8 @@ struct GSWPE_PendingEval {
   _userContent = webkit_web_view_get_user_content_manager(_view); /* unowned */
 
   [self installInitialSettingsFrom:config];
+  [self installSchemeHandlersFrom:config];
+  [self installContentFiltersFrom:config];
 
   /* Connect signals.  GSWPE_ self-pointer goes through the user_data
    * channel; the callbacks trampoline back into Objective-C land. */
@@ -236,6 +258,14 @@ struct GSWPE_PendingEval {
                                             G_CALLBACK(GSWPE_OnNotifyIsLoading), self);
   _signalScriptDialog = g_signal_connect(_view, "script-dialog",
                                          G_CALLBACK(GSWPE_OnScriptDialog), self);
+  _signalMouseTarget = g_signal_connect(_view, "mouse-target-changed",
+                                        G_CALLBACK(GSWPE_OnMouseTargetChanged), self);
+  _signalRunFileChooser = g_signal_connect(_view, "run-file-chooser",
+                                           G_CALLBACK(GSWPE_OnRunFileChooser), self);
+
+  WebKitWebContext *ctx = webkit_web_view_get_context(_view);
+  _signalDownloadStarted = g_signal_connect(ctx, "download-started",
+                                            G_CALLBACK(GSWPE_OnDownloadStarted), self);
 
   /* Pump GLib at ~60Hz.  When there are no events the iteration is
    * cheap; when WebKit is animating, this gives us roughly vsync-rate
@@ -248,6 +278,44 @@ struct GSWPE_PendingEval {
   [[NSRunLoop currentRunLoop] addTimer:_pumpTimer forMode:NSRunLoopCommonModes];
 
   return self;
+}
+
+- (void)installSchemeHandlersFrom:(WKWebViewConfiguration *)config
+{
+  NSDictionary *handlers = [config _schemeHandlers];
+  if ([handlers count] == 0) return;
+  WebKitWebContext *ctx = webkit_web_view_get_context(_view);
+  if (ctx == NULL) return;
+  NSEnumerator *e = [handlers keyEnumerator];
+  NSString *scheme;
+  while ((scheme = [e nextObject]) != nil) {
+    id handler = [handlers objectForKey:scheme];
+    /* Allocate a tiny struct mirroring _GSWKSchemeReg in
+     * WKURLSchemeTask.m.  Keep it ABI-equivalent. */
+    struct _gswk_reg { id handler; id webView; } *reg = g_new0(struct _gswk_reg, 1);
+    reg->handler = handler;          /* weak, ARC-equivalent assignment */
+    reg->webView = nil;              /* host (WKWebView) — filled in below if available */
+    if ([[self host] isKindOfClass:[NSObject class]]) {
+      reg->webView = [self host];
+    }
+    webkit_web_context_register_uri_scheme(ctx, [scheme UTF8String],
+        (WebKitURISchemeRequestCallback)_GSWKSchemeCallback,
+        reg,
+        (GDestroyNotify)_GSWKSchemeReg_Free);
+  }
+}
+
+- (void)installContentFiltersFrom:(WKWebViewConfiguration *)config
+{
+  if (_userContent == NULL) return;
+  NSEnumerator *e = [[[config userContentController] _ruleLists] objectEnumerator];
+  WKContentRuleList *rl;
+  while ((rl = [e nextObject]) != nil) {
+    WebKitUserContentFilter *f = (WebKitUserContentFilter *)[rl _filter];
+    if (f != NULL) {
+      webkit_user_content_manager_add_filter(_userContent, f);
+    }
+  }
 }
 
 - (void)installInitialSettingsFrom:(WKWebViewConfiguration *)config
@@ -300,10 +368,18 @@ struct GSWPE_PendingEval {
     if (_signalNotifyProgress)  g_signal_handler_disconnect(_view, _signalNotifyProgress);
     if (_signalNotifyIsLoading) g_signal_handler_disconnect(_view, _signalNotifyIsLoading);
     if (_signalScriptDialog)    g_signal_handler_disconnect(_view, _signalScriptDialog);
+    if (_signalMouseTarget)     g_signal_handler_disconnect(_view, _signalMouseTarget);
+    if (_signalRunFileChooser)  g_signal_handler_disconnect(_view, _signalRunFileChooser);
+    if (_signalDownloadStarted) {
+      WebKitWebContext *ctx = webkit_web_view_get_context(_view);
+      if (ctx != NULL) g_signal_handler_disconnect(ctx, _signalDownloadStarted);
+      _signalDownloadStarted = 0;
+    }
   }
   _signalLoadChanged = _signalLoadFailed = 0;
   _signalNotifyTitle = _signalNotifyURI = 0;
   _signalNotifyProgress = _signalNotifyIsLoading = _signalScriptDialog = 0;
+  _signalMouseTarget = _signalRunFileChooser = 0;
 
   if (_userContent != NULL && _handlerSignalIds != nil) {
     NSEnumerator *e = [_handlerSignalIds keyEnumerator];
@@ -416,6 +492,73 @@ struct GSWPE_PendingEval {
 - (void)goForward
 {
   if (_view != NULL) webkit_web_view_go_forward(_view);
+}
+
+
+/* ------------------------------------------------------------------ */
+#pragma mark Find in page
+
+typedef void (^GSWPE_FindCompletion)(BOOL matchFound);
+
+struct GSWPE_PendingFind {
+  GSWPE_FindCompletion block;
+  gulong sid_found;
+  gulong sid_failed;
+};
+
+static void GSWPE_OnFindFound(WebKitFindController *fc, guint count, gpointer ud)
+{
+  (void)fc; (void)count;
+  struct GSWPE_PendingFind *p = ud;
+  if (p && p->block) p->block(YES);
+  if (p) {
+    if (p->sid_found)  g_signal_handler_disconnect(fc, p->sid_found);
+    if (p->sid_failed) g_signal_handler_disconnect(fc, p->sid_failed);
+    if (p->block) Block_release(p->block);
+    g_free(p);
+  }
+}
+
+static void GSWPE_OnFindFailed(WebKitFindController *fc, gpointer ud)
+{
+  struct GSWPE_PendingFind *p = ud;
+  if (p && p->block) p->block(NO);
+  if (p) {
+    if (p->sid_found)  g_signal_handler_disconnect(fc, p->sid_found);
+    if (p->sid_failed) g_signal_handler_disconnect(fc, p->sid_failed);
+    if (p->block) Block_release(p->block);
+    g_free(p);
+  }
+}
+
+- (void)findString:(NSString *)text
+        backwards:(BOOL)backwards
+    caseSensitive:(BOOL)caseSensitive
+            wraps:(BOOL)wraps
+        completion:(void (^)(BOOL))completion
+{
+  if (_view == NULL || [text length] == 0) {
+    if (completion) completion(NO);
+    return;
+  }
+  WebKitFindController *fc = webkit_web_view_get_find_controller(_view);
+  if (fc == NULL) {
+    if (completion) completion(NO);
+    return;
+  }
+  guint32 opts = WEBKIT_FIND_OPTIONS_NONE;
+  if (!caseSensitive) opts |= WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE;
+  if (backwards)      opts |= WEBKIT_FIND_OPTIONS_BACKWARDS;
+  if (wraps)          opts |= WEBKIT_FIND_OPTIONS_WRAP_AROUND;
+
+  struct GSWPE_PendingFind *pending = g_new0(struct GSWPE_PendingFind, 1);
+  pending->block = completion ? Block_copy(completion) : NULL;
+  pending->sid_found = g_signal_connect(fc, "found-text",
+                                        G_CALLBACK(GSWPE_OnFindFound), pending);
+  pending->sid_failed = g_signal_connect(fc, "failed-to-find-text",
+                                         G_CALLBACK(GSWPE_OnFindFailed), pending);
+
+  webkit_find_controller_search(fc, [text UTF8String], opts, G_MAXUINT);
 }
 
 
@@ -588,6 +731,21 @@ struct GSWPE_PendingEval {
   uint8_t *src    = (uint8_t *)wl_shm_buffer_get_data(shm);
   BOOL     hasAlpha = (format == WL_SHM_FORMAT_ARGB8888);
 
+  /* wl_shm ARGB8888 pixels are stored as a 32-bit little-endian word
+   * with alpha in the high byte: bytes in memory are B, G, R, A.  We
+   * tell NSBitmapImageRep to interpret each 32-bit word as
+   * little-endian + alpha-first; that matches the wl_shm layout
+   * exactly and lets us copy each row with memcpy instead of
+   * per-pixel byte-swapping.  Performance win is ~5x on the hot
+   * frame-arrival path. */
+  NSBitmapFormat bmpFmt = NSAlphaFirstBitmapFormat
+                        | NS32BitLittleEndianBitmapFormat;
+  if (!hasAlpha) {
+    /* XRGB8888: still BGRA-in-memory, but alpha byte is undefined.
+     * Force opaque alpha via the alpha-nonpremultiplied flag and
+     * post-process the alpha byte. */
+    bmpFmt |= NSAlphaNonpremultipliedBitmapFormat;
+  }
   NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
       initWithBitmapDataPlanes:NULL
                     pixelsWide:w
@@ -597,26 +755,29 @@ struct GSWPE_PendingEval {
                       hasAlpha:YES
                       isPlanar:NO
                 colorSpaceName:NSDeviceRGBColorSpace
-                  bitmapFormat:0
+                  bitmapFormat:bmpFmt
                    bytesPerRow:w * 4
                   bitsPerPixel:32];
 
   uint8_t *dst       = [rep bitmapData];
   NSInteger dstStride = [rep bytesPerRow];
 
-  /* Swizzle BGRA (little-endian ARGB8888 in memory) -> RGBA. */
-  for (int32_t y = 0; y < h; y++) {
-    uint8_t *srow = src + (intptr_t)y * stride;
-    uint8_t *drow = dst + (intptr_t)y * dstStride;
-    for (int32_t x = 0; x < w; x++) {
-      uint8_t b = srow[x * 4 + 0];
-      uint8_t g = srow[x * 4 + 1];
-      uint8_t r = srow[x * 4 + 2];
-      uint8_t a = hasAlpha ? srow[x * 4 + 3] : 0xFF;
-      drow[x * 4 + 0] = r;
-      drow[x * 4 + 1] = g;
-      drow[x * 4 + 2] = b;
-      drow[x * 4 + 3] = a;
+  if (stride == dstStride) {
+    memcpy(dst, src, (size_t)stride * (size_t)h);
+  } else {
+    for (int32_t y = 0; y < h; y++) {
+      memcpy(dst + (intptr_t)y * dstStride,
+             src + (intptr_t)y * stride,
+             (size_t)MIN(stride, (int32_t)dstStride));
+    }
+  }
+  if (!hasAlpha) {
+    /* Stamp alpha to 0xFF on every pixel. */
+    for (int32_t y = 0; y < h; y++) {
+      uint8_t *row = dst + (intptr_t)y * dstStride;
+      for (int32_t x = 0; x < w; x++) {
+        row[x * 4 + 3] = 0xFF;
+      }
     }
   }
   wl_shm_buffer_end_access(shm);
@@ -713,12 +874,25 @@ struct GSWPE_PendingEval {
   if (_exportable == NULL) return;
   struct wpe_view_backend *be =
       wpe_view_backend_exportable_fdo_get_view_backend(_exportable);
+
+  /* WebKit's handleMouseDraggedEvent checks that the motion event's
+   * "button" field is Left (= 1 in WPE) — that's how it knows the
+   * drag should extend a text selection rather than be a plain hover.
+   * Motion events with button=0 cause WebKit to short-circuit out of
+   * the drag-selection path.  So derive button from the held-buttons
+   * bitmask (lowest-numbered held button wins, matching what real
+   * X11/Wayland pointer streams produce). */
+  uint32_t button = 0;
+  if (modifiers & wpe_input_pointer_modifier_button1)      button = 1;
+  else if (modifiers & wpe_input_pointer_modifier_button2) button = 2;
+  else if (modifiers & wpe_input_pointer_modifier_button3) button = 3;
+
   struct wpe_input_pointer_event ev = {
       .type      = wpe_input_pointer_event_type_motion,
       .time      = timestamp,
       .x         = (int)point.x,
       .y         = (int)point.y,
-      .button    = 0,
+      .button    = button,
       .state     = 0,
       .modifiers = modifiers,
   };
@@ -935,6 +1109,266 @@ GSWPE_OnNotifyIsLoading(GObject *src, GParamSpec *spec, gpointer ud)
     [host backend:self didChangeIsLoading:(BOOL)loading];
   }
   [pool release];
+}
+
+static void
+GSWPE_OnMouseTargetChanged(WebKitWebView *view, WebKitHitTestResult *hit,
+                           guint modifiers, gpointer ud)
+{
+  (void)view; (void)modifiers;
+  GSWebKitWPE *self = (GSWebKitWPE *)ud;
+  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+  BOOL isLink     = webkit_hit_test_result_context_is_link(hit);
+  BOOL isImage    = webkit_hit_test_result_context_is_image(hit);
+  BOOL isMedia    = webkit_hit_test_result_context_is_media(hit);
+  BOOL isEditable = webkit_hit_test_result_context_is_editable(hit);
+  BOOL isSelection= webkit_hit_test_result_context_is_selection(hit);
+
+  NSString *token = @"default";
+  if (isLink) {
+    token = @"pointer";
+  } else if (isEditable || isSelection) {
+    token = @"text";
+  }
+
+  NSMutableDictionary *info = [NSMutableDictionary dictionary];
+  [info setObject:[NSNumber numberWithBool:isLink]      forKey:GSWebKitMouseTargetIsLink];
+  [info setObject:[NSNumber numberWithBool:isImage]     forKey:GSWebKitMouseTargetIsImage];
+  [info setObject:[NSNumber numberWithBool:isMedia]     forKey:GSWebKitMouseTargetIsMedia];
+  [info setObject:[NSNumber numberWithBool:isEditable]  forKey:GSWebKitMouseTargetIsEditable];
+  [info setObject:[NSNumber numberWithBool:isSelection] forKey:GSWebKitMouseTargetIsSelection];
+  if (isLink) {
+    const gchar *u = webkit_hit_test_result_get_link_uri(hit);
+    if (u != NULL) [info setObject:[NSString stringWithUTF8String:u]
+                            forKey:GSWebKitMouseTargetLinkURL];
+  }
+  if (isImage) {
+    const gchar *u = webkit_hit_test_result_get_image_uri(hit);
+    if (u != NULL) [info setObject:[NSString stringWithUTF8String:u]
+                            forKey:GSWebKitMouseTargetImageURL];
+  }
+  if (isMedia) {
+    const gchar *u = webkit_hit_test_result_get_media_uri(hit);
+    if (u != NULL) [info setObject:[NSString stringWithUTF8String:u]
+                            forKey:GSWebKitMouseTargetMediaURL];
+  }
+
+  id <GSWebKitBackendHost> host = [self host];
+  if ([host respondsToSelector:@selector(backend:didChangeMouseCursor:)]) {
+    [host backend:self didChangeMouseCursor:token];
+  }
+  if ([host respondsToSelector:@selector(backend:didChangeMouseTargetInfo:)]) {
+    [host backend:self didChangeMouseTargetInfo:info];
+  }
+  [pool release];
+}
+
+/* ------------------------------------------------------------------ */
+#pragma mark Download bridge
+
+/* The user_data pointer we attach to each WebKitDownload's signal
+ * closures.  Carries the backend back-pointer and the cached
+ * destination URL (NSURL strong reference; explicitly released on
+ * finish/fail). */
+struct GSWPE_DownloadCtx {
+  GSWebKitWPE *backend;
+  NSURL       *destination;       /* retained */
+};
+
+static void GSWPE_DownloadCtxFree(gpointer data, GClosure *closure)
+{
+  (void)closure;
+  struct GSWPE_DownloadCtx *c = data;
+  if (c == NULL) return;
+  [c->destination release];
+  g_free(c);
+}
+
+static void
+GSWPE_OnDownloadStarted(WebKitWebContext *ctx, WebKitDownload *download, gpointer ud)
+{
+  (void)ctx;
+  GSWebKitWPE *self = (GSWebKitWPE *)ud;
+
+  /* Hook the per-download signals.  Each gets its own context so we
+   * can stash the chosen destination for the finished/failed
+   * callbacks. */
+  struct GSWPE_DownloadCtx *c = g_new0(struct GSWPE_DownloadCtx, 1);
+  c->backend = self;
+  g_signal_connect_data(download, "decide-destination",
+                        G_CALLBACK(GSWPE_OnDownloadDecideDestination),
+                        c, GSWPE_DownloadCtxFree, (GConnectFlags)0);
+  g_signal_connect(download, "finished",
+                   G_CALLBACK(GSWPE_OnDownloadFinished), self);
+  g_signal_connect(download, "failed",
+                   G_CALLBACK(GSWPE_OnDownloadFailed), self);
+}
+
+static gboolean
+GSWPE_OnDownloadDecideDestination(WebKitDownload *download,
+                                  const gchar *suggested,
+                                  gpointer ud)
+{
+  struct GSWPE_DownloadCtx *c = ud;
+  if (c == NULL) return FALSE;
+  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+  WebKitURIResponse *uri_resp = webkit_download_get_response(download);
+  NSString *mime = nil;
+  if (uri_resp != NULL) {
+    const gchar *m = webkit_uri_response_get_mime_type(uri_resp);
+    if (m) mime = [NSString stringWithUTF8String:m];
+  }
+  NSURLResponse *response =
+      [[[NSURLResponse alloc] initWithURL:nil
+                                  MIMEType:mime
+                     expectedContentLength:-1
+                          textEncodingName:nil] autorelease];
+  NSString *name = (suggested != NULL)
+      ? [NSString stringWithUTF8String:suggested]
+      : @"download";
+
+  id <GSWebKitBackendHost> host = [c->backend host];
+
+  /* The destination decision is synchronous from WebKit's point of
+   * view (we must call set_destination before returning).  We block
+   * the GMain loop until the host's NSSavePanel returns by running an
+   * inner NSRunLoop spin.  This is the same pattern Cocoa uses for
+   * modal panels driven from a non-main thread... except we ARE on
+   * the main thread, so we just run the panel inline. */
+  __block NSURL *chosen = nil;
+  __block BOOL responded = NO;
+  if ([host respondsToSelector:
+          @selector(backend:didStartDownloadOfFilename:response:completion:)]) {
+    [host backend:c->backend
+        didStartDownloadOfFilename:name
+                          response:response
+                        completion:^(NSURL *dest) {
+      chosen = [dest retain];
+      responded = YES;
+    }];
+    /* The NSSavePanel runs modal so by here responded should be YES.
+     * If it isn't (delegate-async style), fall through to cancel. */
+  }
+  if (!responded || chosen == nil) {
+    webkit_download_cancel(download);
+    [pool release];
+    return TRUE;
+  }
+  c->destination = chosen;  /* take ownership */
+  NSString *fileURI = [NSString stringWithFormat:@"file://%@", [chosen path]];
+  webkit_download_set_destination(download, [fileURI UTF8String]);
+  [pool release];
+  return TRUE;
+}
+
+static void
+GSWPE_OnDownloadFinished(WebKitDownload *download, gpointer ud)
+{
+  GSWebKitWPE *self = (GSWebKitWPE *)ud;
+  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+  const gchar *dest = webkit_download_get_destination(download);
+  NSURL *destURL = nil;
+  if (dest != NULL) {
+    NSString *path = [NSString stringWithUTF8String:dest];
+    if ([path hasPrefix:@"file://"]) {
+      path = [path substringFromIndex:7];
+    }
+    destURL = [NSURL fileURLWithPath:path];
+  }
+  id <GSWebKitBackendHost> host = [self host];
+  if ([host respondsToSelector:@selector(backend:didFinishDownloadToURL:)]) {
+    [host backend:self didFinishDownloadToURL:destURL];
+  }
+  [pool release];
+}
+
+static void
+GSWPE_OnDownloadFailed(WebKitDownload *download, GError *err, gpointer ud)
+{
+  GSWebKitWPE *self = (GSWebKitWPE *)ud;
+  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+  NSString *desc = (err && err->message) ? [NSString stringWithUTF8String:err->message]
+                                          : @"Download failed";
+  NSError *nserr = [NSError errorWithDomain:WKErrorDomain
+                                       code:WKErrorUnknown
+                                   userInfo:[NSDictionary dictionaryWithObject:desc
+                                                                        forKey:NSLocalizedDescriptionKey]];
+  const gchar *dest = webkit_download_get_destination(download);
+  NSURL *destURL = nil;
+  if (dest != NULL) {
+    NSString *path = [NSString stringWithUTF8String:dest];
+    if ([path hasPrefix:@"file://"]) path = [path substringFromIndex:7];
+    destURL = [NSURL fileURLWithPath:path];
+  }
+  id <GSWebKitBackendHost> host = [self host];
+  if ([host respondsToSelector:@selector(backend:didFailDownloadWithError:destination:)]) {
+    [host backend:self didFailDownloadWithError:nserr destination:destURL];
+  }
+  [pool release];
+}
+
+void GSWebKitWPE_CancelDownload(id engineHandle)
+{
+  /* Stub for WKDownload's -cancel: — the public WKDownload API hands
+   * us an engine handle wrapping the WebKitDownload*.  v1 doesn't
+   * carry the original WebKitDownload through to the public side, so
+   * this is a no-op.  Cancel of an in-flight download isn't yet wired
+   * end-to-end; documented as a v1 follow-up. */
+  (void)engineHandle;
+}
+
+
+static gboolean
+GSWPE_OnRunFileChooser(WebKitWebView *view, WebKitFileChooserRequest *request, gpointer ud)
+{
+  (void)view;
+  GSWebKitWPE *self = (GSWebKitWPE *)ud;
+  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+  gboolean multiple = webkit_file_chooser_request_get_select_multiple(request);
+  const gchar * const *mimes = webkit_file_chooser_request_get_mime_types(request);
+  NSMutableArray *mimeTypes = [NSMutableArray array];
+  if (mimes != NULL) {
+    for (int i = 0; mimes[i] != NULL; i++) {
+      [mimeTypes addObject:[NSString stringWithUTF8String:mimes[i]]];
+    }
+  }
+
+  /* Keep the request alive across the async NSOpenPanel callback. */
+  g_object_ref(request);
+
+  id <GSWebKitBackendHost> host = [self host];
+  if (![host respondsToSelector:
+          @selector(backend:runFileChooserAllowingMultiple:mimeTypes:completion:)]) {
+    webkit_file_chooser_request_cancel(request);
+    g_object_unref(request);
+    [pool release];
+    return TRUE;
+  }
+
+  [host backend:self
+      runFileChooserAllowingMultiple:(BOOL)multiple
+                           mimeTypes:mimeTypes
+                          completion:^(NSArray *urls) {
+    if ([urls count] == 0) {
+      webkit_file_chooser_request_cancel(request);
+    } else {
+      NSUInteger n = [urls count];
+      const gchar **paths = g_new0(const gchar *, n + 1);
+      for (NSUInteger i = 0; i < n; i++) {
+        NSURL *u = [urls objectAtIndex:i];
+        paths[i] = [[u path] UTF8String];
+      }
+      webkit_file_chooser_request_select_files(request, paths);
+      g_free(paths);
+    }
+    g_object_unref(request);
+  }];
+
+  [pool release];
+  return TRUE;
 }
 
 static gboolean

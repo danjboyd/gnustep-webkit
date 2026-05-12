@@ -16,6 +16,7 @@
 #define GNUstep_H_WKWebsiteDataStore
 
 #import <WebKit/WKFoundation.h>
+#import <WebKit/WKHTTPCookieStore.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -25,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (WKWebsiteDataStore *)nonPersistentDataStore;
 
 @property (nonatomic, readonly, getter=isPersistent) BOOL persistent;
+@property (nonatomic, readonly, strong) WKHTTPCookieStore *httpCookieStore;
 
 + (NSSet<NSString *> *)allWebsiteDataTypes;
 

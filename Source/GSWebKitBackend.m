@@ -14,6 +14,15 @@
 #import "GSWebKitBackend.h"
 #import "GSWebKitWPE.h"
 
+NSString * const GSWebKitMouseTargetIsLink      = @"GSWebKitMouseTargetIsLink";
+NSString * const GSWebKitMouseTargetLinkURL     = @"GSWebKitMouseTargetLinkURL";
+NSString * const GSWebKitMouseTargetIsImage     = @"GSWebKitMouseTargetIsImage";
+NSString * const GSWebKitMouseTargetImageURL    = @"GSWebKitMouseTargetImageURL";
+NSString * const GSWebKitMouseTargetIsMedia     = @"GSWebKitMouseTargetIsMedia";
+NSString * const GSWebKitMouseTargetMediaURL    = @"GSWebKitMouseTargetMediaURL";
+NSString * const GSWebKitMouseTargetIsEditable  = @"GSWebKitMouseTargetIsEditable";
+NSString * const GSWebKitMouseTargetIsSelection = @"GSWebKitMouseTargetIsSelection";
+
 @implementation GSWebKitBackend
 
 @synthesize host = _host;
@@ -44,6 +53,13 @@
   if (completion != NULL) {
     completion(nil, nil);
   }
+}
+
+- (void)findString:(NSString *)t backwards:(BOOL)b caseSensitive:(BOOL)c
+             wraps:(BOOL)w completion:(void (^)(BOOL))completion
+{
+  (void)t; (void)b; (void)c; (void)w;
+  if (completion) completion(NO);
 }
 
 - (void)addUserScript:(NSString *)src injectionTime:(NSInteger)t forMainFrameOnly:(BOOL)b

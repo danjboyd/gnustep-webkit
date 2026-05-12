@@ -88,8 +88,32 @@
 - (instancetype)_initPersistent:(BOOL)persistent;
 @end
 
+#import <WebKit/WKWebViewConfiguration.h>
+@interface WKWebViewConfiguration ()
+- (NSDictionary *)_schemeHandlers;
+@end
+
+extern void _GSWKSchemeCallback(void *req, void *user_data);
+extern void _GSWKSchemeReg_Free(void *p);
+
+@class WKHTTPCookieStore;
+@interface WKHTTPCookieStore (Internal)
+- (instancetype)_initWithCookieManager:(void *)manager;
+@end
+
 @interface WKUserContentController ()
 - (NSArray *)_handlers;
+- (NSArray *)_ruleLists;
+@end
+
+@class WKContentRuleList;
+@interface WKContentRuleList (Internal)
+- (void *)_filter;
+@end
+
+#import <WebKit/WKFindConfiguration.h>
+@interface WKFindResult ()
+- (instancetype)_initWithMatchFound:(BOOL)found;
 @end
 
 /* Internal record describing one registered message handler.  Stored

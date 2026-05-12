@@ -17,6 +17,7 @@
 #import <WebKit/WKFoundation.h>
 #import <WebKit/WKPreferences.h>
 #import <WebKit/WKProcessPool.h>
+#import <WebKit/WKURLSchemeHandler.h>
 #import <WebKit/WKUserContentController.h>
 #import <WebKit/WKWebsiteDataStore.h>
 
@@ -34,6 +35,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL allowsAirPlayForMediaPlayback;
 @property (nonatomic) BOOL limitsNavigationsToAppBoundDomains;
 @property (nonatomic) BOOL upgradeKnownHostsToHTTPS;
+
+/* Custom URL scheme handlers. */
+- (void)setURLSchemeHandler:(nullable id <WKURLSchemeHandler>)urlSchemeHandler
+               forURLScheme:(NSString *)urlScheme;
+- (nullable id <WKURLSchemeHandler>)urlSchemeHandlerForURLScheme:(NSString *)urlScheme;
 
 @end
 

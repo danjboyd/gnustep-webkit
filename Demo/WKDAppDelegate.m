@@ -5,6 +5,9 @@
 
 #import "WKDAppDelegate.h"
 #import "WKDBrowserWindowController.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 @implementation WKDAppDelegate
 
@@ -39,12 +42,24 @@
 - (void)applicationWillTerminate:(NSNotification *)note
 {
   (void)note;
-  /* Drop the browser controller before the C runtime starts tearing
-   * down GLib/WPE atexit state.  This pops -[WKWebView dealloc],
-   * which calls -[GSWebKitBackend shutdown] and unwinds the engine
-   * objects on our schedule rather than racing exit handlers. */
+  /* Drop the browser controller so WKWebView's dealloc runs while
+   * the run loop is still alive — that's where GSWebKitBackend
+   * shutdown happens (invalidates the GLib pump timer, disconnects
+   * WebKit signals, unrefs the WebKitWebView). */
   [_browser release];
   _browser = nil;
+
+  /* Skip the rest of AppKit's teardown.  GNUstep's
+   * -[NSAutoreleasePool emptyPool] sometimes drains objects whose
+   * backing buffers were owned by WPE/GLib subsystems that we just
+   * tore down (or, conversely, are still being touched by the WPE
+   * web process's IPC layer during its own atexit handlers).  The
+   * resulting use-after-free shows up as a SIGSEGV in
+   * -[GSArray dealloc] inside the pool drain — a real defect, but
+   * one we can't fix from outside libgnustep-gui.  All state we
+   * cared about has been flushed; the OS will reclaim the rest. */
+  fflush(NULL);
+  _exit(0);
 }
 
 - (void)dealloc

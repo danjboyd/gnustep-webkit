@@ -21,6 +21,7 @@
   BOOL _allowsAirPlayForMediaPlayback;
   BOOL _limitsNavigationsToAppBoundDomains;
   BOOL _upgradeKnownHostsToHTTPS;
+  NSMutableDictionary *_schemeHandlers;  /* scheme(lowercase) -> handler */
 }
 
 @synthesize processPool = _processPool;
@@ -110,6 +111,32 @@
   _applicationNameForUserAgent = [name copy];
 }
 
+- (void)setURLSchemeHandler:(id <WKURLSchemeHandler>)handler
+               forURLScheme:(NSString *)scheme
+{
+  if ([scheme length] == 0) return;
+  if (_schemeHandlers == nil) {
+    _schemeHandlers = [[NSMutableDictionary alloc] init];
+  }
+  NSString *key = [scheme lowercaseString];
+  if (handler == nil) {
+    [_schemeHandlers removeObjectForKey:key];
+  } else {
+    [_schemeHandlers setObject:handler forKey:key];
+  }
+}
+
+- (id <WKURLSchemeHandler>)urlSchemeHandlerForURLScheme:(NSString *)scheme
+{
+  if ([scheme length] == 0) return nil;
+  return [_schemeHandlers objectForKey:[scheme lowercaseString]];
+}
+
+- (NSDictionary *)_schemeHandlers
+{
+  return _schemeHandlers;
+}
+
 - (void)dealloc
 {
   [_processPool release];
@@ -117,6 +144,7 @@
   [_userContentController release];
   [_websiteDataStore release];
   [_applicationNameForUserAgent release];
+  [_schemeHandlers release];
   [super dealloc];
 }
 

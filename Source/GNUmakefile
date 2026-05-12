@@ -22,6 +22,13 @@ WebKit_HEADER_FILES = \
 	WKBackForwardList.h \
 	WKBackForwardListItem.h \
 	WKContentWorld.h \
+	WKContentRuleListStore.h \
+	WKDownload.h \
+	WKDownloadDelegate.h \
+	WKFindConfiguration.h \
+	WKHTTPCookieStore.h \
+	WKSnapshotConfiguration.h \
+	WKURLSchemeHandler.h \
 	WKFrameInfo.h \
 	WKNavigation.h \
 	WKNavigationAction.h \
@@ -43,7 +50,13 @@ WebKit_OBJC_FILES = \
 	WKError.m \
 	WKBackForwardList.m \
 	WKBackForwardListItem.m \
+	WKContentRuleListStore.m \
 	WKContentWorld.m \
+	WKDownload.m \
+	WKFindConfiguration.m \
+	WKHTTPCookieStore.m \
+	WKSnapshotConfiguration.m \
+	WKURLSchemeTask.m \
 	WKFrameInfo.m \
 	WKNavigation.m \
 	WKNavigationAction.m \
@@ -70,33 +83,35 @@ endif
 WebKit_LIBRARIES_DEPEND_UPON += -ldispatch
 
 # ----------------------------------------------------------------------
-# WPE WebKit backend.  Required at build time: any consumer of this
-# framework links against WPEWebKit transitively.  Probe for the modern
-# 2.0 pkg-config name (Debian 13 / current Igalia), fall back to the
-# legacy 1.1 name (older distros) if needed.  Without an engine we
-# cannot ship a real web view, so we error out.
+# Engine + optional dependencies.  Prefer the config.make written by
+# `./configure`; fall back to inline pkg-config probing so a plain
+# `make` from a clean checkout still works on Debian/Ubuntu.
 # ----------------------------------------------------------------------
-WPE_PKGS_2 := wpe-webkit-2.0 wpe-1.0 wpebackend-fdo-1.0
-WPE_PKGS_1 := wpe-webkit-1.1 libwpe-1.0 wpebackend-fdo-1.0
+-include ../config.make
 
-ifeq ($(shell pkg-config --exists $(WPE_PKGS_2) && echo yes),yes)
-  WPE_PKGS := $(WPE_PKGS_2)
-  WPE_DEFINE := -DGS_WEBKIT_WPE_API_2=1
-else ifeq ($(shell pkg-config --exists $(WPE_PKGS_1) && echo yes),yes)
-  WPE_PKGS := $(WPE_PKGS_1)
-  WPE_DEFINE := -DGS_WEBKIT_WPE_API_1=1
-else
-  $(error WPE WebKit development packages are required. Install \
-    libwpewebkit-2.0-dev libwpe-1.0-dev libwpebackend-fdo-1.0-dev \
-    (Debian/Ubuntu) or the equivalent for your distribution.)
+ifeq ($(GS_WEBKIT_WPE_CFLAGS),)
+  WPE_PKGS_2 := wpe-webkit-2.0 wpe-1.0 wpebackend-fdo-1.0
+  WPE_PKGS_1 := wpe-webkit-1.1 libwpe-1.0 wpebackend-fdo-1.0
+  ifeq ($(shell pkg-config --exists $(WPE_PKGS_2) && echo yes),yes)
+    GS_WEBKIT_WPE_CFLAGS := $(shell pkg-config --cflags $(WPE_PKGS_2)) -DGS_WEBKIT_WPE_API_2=1
+    GS_WEBKIT_WPE_LIBS   := $(shell pkg-config --libs   $(WPE_PKGS_2))
+  else ifeq ($(shell pkg-config --exists $(WPE_PKGS_1) && echo yes),yes)
+    GS_WEBKIT_WPE_CFLAGS := $(shell pkg-config --cflags $(WPE_PKGS_1)) -DGS_WEBKIT_WPE_API_1=1
+    GS_WEBKIT_WPE_LIBS   := $(shell pkg-config --libs   $(WPE_PKGS_1))
+  else
+    $(error WPE WebKit development packages are required.  Run ./configure \
+      to see specific missing packages, or install libwpewebkit-2.0-dev \
+      libwpe-1.0-dev libwpebackend-fdo-1.0-dev on Debian/Ubuntu.)
+  endif
 endif
 
-WPE_CFLAGS := $(shell pkg-config --cflags $(WPE_PKGS))
-WPE_LIBS   := $(shell pkg-config --libs   $(WPE_PKGS))
+ifeq ($(GS_WEBKIT_WAYLAND_LIBS),)
+  GS_WEBKIT_WAYLAND_LIBS := $(shell pkg-config --libs wayland-server)
+endif
 
-ADDITIONAL_OBJCFLAGS += $(WPE_CFLAGS) $(WPE_DEFINE)
-ADDITIONAL_CFLAGS    += $(WPE_CFLAGS) $(WPE_DEFINE)
-WebKit_LIBRARIES_DEPEND_UPON += $(WPE_LIBS) -lwayland-server
+ADDITIONAL_OBJCFLAGS += $(GS_WEBKIT_WPE_CFLAGS) $(GS_WEBKIT_SOUP_CFLAGS) $(GS_WEBKIT_EXTRA_OBJCFLAGS)
+ADDITIONAL_CFLAGS    += $(GS_WEBKIT_WPE_CFLAGS) $(GS_WEBKIT_SOUP_CFLAGS) $(GS_WEBKIT_EXTRA_OBJCFLAGS)
+WebKit_LIBRARIES_DEPEND_UPON += $(GS_WEBKIT_WPE_LIBS) $(GS_WEBKIT_WAYLAND_LIBS)
 
 # Blocks are needed to expose Apple's completionHandler: API style.
 # GCC/clang both support them via -fblocks; libBlocksRuntime is part of

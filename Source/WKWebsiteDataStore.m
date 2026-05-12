@@ -9,6 +9,9 @@
  */
 
 #import <WebKit/WKWebsiteDataStore.h>
+#import "GSWebKitInternal.h"
+
+#include <wpe/webkit.h>
 
 static WKWebsiteDataStore *gDefaultStore;
 static NSLock *gDefaultStoreLock;
@@ -16,6 +19,7 @@ static NSLock *gDefaultStoreLock;
 @implementation WKWebsiteDataStore
 {
   BOOL _persistent;
+  WKHTTPCookieStore *_httpCookieStore;
 }
 
 @synthesize persistent = _persistent;
@@ -65,6 +69,29 @@ static NSLock *gDefaultStoreLock;
 - (instancetype)init
 {
   return [self _initPersistent:YES];
+}
+
+- (WKHTTPCookieStore *)httpCookieStore
+{
+  if (_httpCookieStore == nil) {
+    /* Lazy-initialise against the default WebKitNetworkSession's
+     * cookie manager.  Using the default session means cookies set or
+     * read here are shared with any WKWebView using the default
+     * configuration — same behaviour as Apple's defaultDataStore. */
+    WebKitNetworkSession *session = webkit_network_session_get_default();
+    WebKitCookieManager *cm = NULL;
+    if (session != NULL) {
+      cm = webkit_network_session_get_cookie_manager(session);
+    }
+    _httpCookieStore = [[WKHTTPCookieStore alloc] _initWithCookieManager:cm];
+  }
+  return _httpCookieStore;
+}
+
+- (void)dealloc
+{
+  [_httpCookieStore release];
+  [super dealloc];
 }
 
 - (instancetype)_initPersistent:(BOOL)persistent

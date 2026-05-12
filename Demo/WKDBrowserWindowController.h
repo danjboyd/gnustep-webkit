@@ -27,6 +27,8 @@
   NSButton           *_evalButton;
   NSProgressIndicator *_progress;
   NSTextField        *_statusField;
+  NSFileHandle       *_stdinHandle;     /* only used in test mode */
+  BOOL                _testMode;
 }
 
 - (void)goToAddress:(id)sender;

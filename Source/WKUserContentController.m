@@ -36,6 +36,7 @@
 {
   NSMutableArray *_userScripts;
   NSMutableArray *_handlers;
+  NSMutableArray *_ruleLists;
 }
 
 - (instancetype)init
@@ -44,6 +45,7 @@
   if (self != nil) {
     _userScripts = [[NSMutableArray alloc] init];
     _handlers    = [[NSMutableArray alloc] init];
+    _ruleLists   = [[NSMutableArray alloc] init];
   }
   return self;
 }
@@ -62,7 +64,28 @@
 {
   [_userScripts release];
   [_handlers release];
+  [_ruleLists release];
   [super dealloc];
+}
+
+- (void)addContentRuleList:(WKContentRuleList *)list
+{
+  if (list != nil) [_ruleLists addObject:list];
+}
+
+- (void)removeContentRuleList:(WKContentRuleList *)list
+{
+  if (list != nil) [_ruleLists removeObject:list];
+}
+
+- (void)removeAllContentRuleLists
+{
+  [_ruleLists removeAllObjects];
+}
+
+- (NSArray *)_ruleLists
+{
+  return _ruleLists;
 }
 
 - (NSArray *)userScripts

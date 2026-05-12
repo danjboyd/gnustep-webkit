@@ -57,6 +57,19 @@
         didReceiveScriptMessageWithName:(NSString *)name
                                    body:(id)body;
 
+/* The mouse is hovering over a new sort of content.  Sent as a string
+ * token so the engine layer doesn't depend on AppKit's NSCursor.
+ * Tokens: @"pointer" (over a link), @"text" (over editable text),
+ * @"default" (anything else). */
+- (void)backend:(GSWebKitBackend *)backend didChangeMouseCursor:(NSString *)token;
+
+/* The mouse is now over a different kind of element.  info is keyed by
+ * the GSWebKitMouseTarget* constants below.  Stale until the next call
+ * (the host should cache it).  Empty dictionary means "nothing
+ * interesting under the cursor". */
+- (void)backend:(GSWebKitBackend *)backend
+    didChangeMouseTargetInfo:(NSDictionary *)info;
+
 /* UI delegate dialogs. */
 - (void)backend:(GSWebKitBackend *)backend
     runJavaScriptAlertWithMessage:(NSString *)message
@@ -69,7 +82,39 @@
                         defaultText:(NSString *)defaultText
                          completion:(void (^)(NSString *result))completion;
 
+/* File chooser.  Engine asks for files; host (WKWebView) presents
+ * NSOpenPanel and invokes the completion block with file URLs or nil
+ * to cancel. */
+- (void)backend:(GSWebKitBackend *)backend
+    runFileChooserAllowingMultiple:(BOOL)allowMultiple
+                          mimeTypes:(NSArray *)mimeTypes
+                         completion:(void (^)(NSArray *fileURLs))completion;
+
+/* Download starting.  The engine is about to start downloading
+ * `suggestedFilename` with the given response.  The completion block
+ * should be invoked with the destination NSURL (or nil to cancel). */
+- (void)backend:(GSWebKitBackend *)backend
+    didStartDownloadOfFilename:(NSString *)suggestedFilename
+                       response:(NSURLResponse *)response
+                     completion:(void (^)(NSURL *destinationURL))completion;
+- (void)backend:(GSWebKitBackend *)backend
+    didFinishDownloadToURL:(NSURL *)destinationURL;
+- (void)backend:(GSWebKitBackend *)backend
+    didFailDownloadWithError:(NSError *)error
+                  destination:(NSURL *)destinationURL;
+
 @end
+
+/* Keys for the dictionary passed to -backend:didChangeMouseTargetInfo:.
+ * BOOL keys are NSNumber-wrapped booleans, URL keys are NSString. */
+extern NSString * const GSWebKitMouseTargetIsLink;       /* NSNumber bool */
+extern NSString * const GSWebKitMouseTargetLinkURL;      /* NSString */
+extern NSString * const GSWebKitMouseTargetIsImage;      /* NSNumber bool */
+extern NSString * const GSWebKitMouseTargetImageURL;     /* NSString */
+extern NSString * const GSWebKitMouseTargetIsMedia;      /* NSNumber bool */
+extern NSString * const GSWebKitMouseTargetMediaURL;     /* NSString */
+extern NSString * const GSWebKitMouseTargetIsEditable;   /* NSNumber bool */
+extern NSString * const GSWebKitMouseTargetIsSelection;  /* NSNumber bool */
 
 
 /* Mouse / pointer event mapping.  Mirrors wpe_input_pointer_event_type
@@ -106,6 +151,13 @@ typedef NS_ENUM(NSInteger, GSWebKitPointerEventType) {
 /* JS. */
 - (void)evaluateJavaScript:(NSString *)javaScript
                 completion:(void (^)(id result, NSError *error))completion;
+
+/* Find in page. */
+- (void)findString:(NSString *)text
+        backwards:(BOOL)backwards
+    caseSensitive:(BOOL)caseSensitive
+            wraps:(BOOL)wraps
+        completion:(void (^)(BOOL matchFound))completion;
 
 /* User content. */
 - (void)addUserScript:(NSString *)source

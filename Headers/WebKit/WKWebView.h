@@ -19,7 +19,9 @@
 #import <WebKit/WKFoundation.h>
 #import <WebKit/WKBackForwardList.h>
 #import <WebKit/WKContentWorld.h>
+#import <WebKit/WKFindConfiguration.h>
 #import <WebKit/WKNavigation.h>
+#import <WebKit/WKSnapshotConfiguration.h>
 #import <WebKit/WKNavigationDelegate.h>
 #import <WebKit/WKUIDelegate.h>
 #import <WebKit/WKWebViewConfiguration.h>
@@ -88,6 +90,28 @@ NS_ASSUME_NONNULL_BEGIN
                   inFrame:(nullable WKFrameInfo *)frame
             inContentWorld:(WKContentWorld *)contentWorld
          completionHandler:(void (^ _Nullable)(id _Nullable, NSError * _Nullable))completionHandler;
+
+/* Find in page ------------------------------------------------------ */
+
+- (void)findString:(NSString *)string
+     configuration:(nullable WKFindConfiguration *)configuration
+ completionHandler:(void (^ _Nullable)(WKFindResult *result))completionHandler;
+
+/* Snapshot + PDF + Print -------------------------------------------- */
+
+- (void)takeSnapshotWithConfiguration:(nullable WKSnapshotConfiguration *)config
+                     completionHandler:(void (^)(NSImage * _Nullable image,
+                                                 NSError * _Nullable error))completionHandler;
+
+- (void)createPDFWithConfiguration:(nullable WKPDFConfiguration *)config
+                  completionHandler:(void (^)(NSData * _Nullable pdf,
+                                              NSError * _Nullable error))completionHandler;
+
+/* Returns an NSPrintOperation already configured for this view's
+ * current page contents.  Caller invokes -runOperation or
+ * -runOperationModalForWindow:delegate:didRunSelector:contextInfo:.
+ * Not supported on the WPE backend; returns nil. */
+- (nullable NSPrintOperation *)printOperationWithPrintInfo:(NSPrintInfo *)printInfo;
 
 @end
 

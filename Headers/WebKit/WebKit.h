@@ -22,7 +22,14 @@
 #import <WebKit/WKError.h>
 #import <WebKit/WKBackForwardListItem.h>
 #import <WebKit/WKBackForwardList.h>
+#import <WebKit/WKContentRuleListStore.h>
 #import <WebKit/WKContentWorld.h>
+#import <WebKit/WKDownload.h>
+#import <WebKit/WKDownloadDelegate.h>
+#import <WebKit/WKFindConfiguration.h>
+#import <WebKit/WKHTTPCookieStore.h>
+#import <WebKit/WKSnapshotConfiguration.h>
+#import <WebKit/WKURLSchemeHandler.h>
 #import <WebKit/WKFrameInfo.h>
 #import <WebKit/WKNavigation.h>
 #import <WebKit/WKNavigationAction.h>

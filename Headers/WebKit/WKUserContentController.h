@@ -12,6 +12,7 @@
 #define GNUstep_H_WKUserContentController
 
 #import <WebKit/WKFoundation.h>
+#import <WebKit/WKContentRuleListStore.h>
 #import <WebKit/WKUserScript.h>
 #import <WebKit/WKScriptMessageHandler.h>
 #import <WebKit/WKContentWorld.h>
@@ -34,6 +35,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)removeScriptMessageHandlerForName:(NSString *)name
                              contentWorld:(WKContentWorld *)contentWorld;
 - (void)removeAllScriptMessageHandlers;
+
+- (void)addContentRuleList:(WKContentRuleList *)contentRuleList;
+- (void)removeContentRuleList:(WKContentRuleList *)contentRuleList;
+- (void)removeAllContentRuleLists;
 
 @end
 
