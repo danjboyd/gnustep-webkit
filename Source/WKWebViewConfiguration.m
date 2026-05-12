@@ -73,6 +73,9 @@
   c->_allowsAirPlayForMediaPlayback  = _allowsAirPlayForMediaPlayback;
   c->_limitsNavigationsToAppBoundDomains = _limitsNavigationsToAppBoundDomains;
   c->_upgradeKnownHostsToHTTPS = _upgradeKnownHostsToHTTPS;
+  if (_schemeHandlers != nil) {
+    c->_schemeHandlers = [_schemeHandlers mutableCopy];
+  }
   return c;
 }
 

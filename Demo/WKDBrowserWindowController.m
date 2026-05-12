@@ -173,6 +173,30 @@
       fprintf(stderr, "WKDEMO_ACK: WEBVIEW_RESIZE %d %d\n", w, h);
       fflush(stderr);
     }
+  } else if ([cmd hasPrefix:@"COOKIE_SET "]) {
+    /* Format: COOKIE_SET name=value;domain=host */
+    NSString *body = [cmd substringFromIndex:11];
+    NSArray *parts = [body componentsSeparatedByString:@";"];
+    NSString *kv = [parts count] > 0 ? [parts objectAtIndex:0] : @"";
+    NSString *dom = [parts count] > 1 ? [parts objectAtIndex:1] : @".test";
+    NSArray *kvParts = [kv componentsSeparatedByString:@"="];
+    if ([kvParts count] >= 2) {
+      [self _testCookieRoundTripTo:[kvParts objectAtIndex:0]
+                              value:[kvParts objectAtIndex:1]
+                             domain:dom];
+    }
+    fprintf(stderr, "WKDEMO_ACK: COOKIE_SET\n");
+    fflush(stderr);
+  } else if ([cmd isEqualToString:@"COOKIE_LIST"]) {
+    [self _testReadCookies:^(NSString *out) {
+      fprintf(stderr, "WKDEMO_COOKIE_RESULT: %s\n", [out UTF8String]);
+      fflush(stderr);
+    }];
+  } else if ([cmd isEqualToString:@"SNAPSHOT"]) {
+    [self _testSnapshotInto:^(NSString *out) {
+      fprintf(stderr, "WKDEMO_SNAPSHOT_RESULT: %s\n", [out UTF8String]);
+      fflush(stderr);
+    }];
   } else if ([cmd isEqualToString:@"QUIT"]) {
     [NSApp terminate:nil];
   } else {
@@ -502,6 +526,53 @@
 - (void)zoomIn:(id)sender    { (void)sender; [_webView setPageZoom:[_webView pageZoom] * 1.1]; }
 - (void)zoomOut:(id)sender   { (void)sender; [_webView setPageZoom:[_webView pageZoom] / 1.1]; }
 - (void)zoomReset:(id)sender { (void)sender; [_webView setPageZoom:1.0]; }
+
+- (void)_testCookieRoundTripTo:(NSString *)key
+                          value:(NSString *)value
+                         domain:(NSString *)domain
+{
+  WKHTTPCookieStore *cs = [[WKWebsiteDataStore defaultDataStore] httpCookieStore];
+  NSHTTPCookie *c = [NSHTTPCookie cookieWithProperties:[NSDictionary
+      dictionaryWithObjectsAndKeys:
+        key,                 NSHTTPCookieName,
+        value,               NSHTTPCookieValue,
+        domain,              NSHTTPCookieDomain,
+        @"/",                NSHTTPCookiePath,
+        nil]];
+  [cs setCookie:c completionHandler:NULL];
+}
+
+- (void)_testReadCookies:(void (^)(NSString *))block
+{
+  WKHTTPCookieStore *cs = [[WKWebsiteDataStore defaultDataStore] httpCookieStore];
+  [cs getAllCookies:^(NSArray *cookies) {
+    NSMutableArray *bits = [NSMutableArray array];
+    NSEnumerator *e = [cookies objectEnumerator];
+    NSHTTPCookie *c;
+    while ((c = [e nextObject]) != nil) {
+      [bits addObject:[NSString stringWithFormat:@"%@@%@=%@",
+                                                  [c name], [c domain], [c value]]];
+    }
+    block([bits componentsJoinedByString:@","]);
+  }];
+}
+
+- (void)_testSnapshotInto:(void (^)(NSString *))block
+{
+  [_webView takeSnapshotWithConfiguration:nil
+                         completionHandler:^(NSImage *img, NSError *err) {
+    if (err != nil) {
+      block([NSString stringWithFormat:@"error:%@", [err localizedDescription]]);
+      return;
+    }
+    if (img == nil) {
+      block(@"nil");
+      return;
+    }
+    NSSize sz = [img size];
+    block([NSString stringWithFormat:@"image:%.0fx%.0f", sz.width, sz.height]);
+  }];
+}
 
 - (void)demoFileChooser:(id)sender
 {

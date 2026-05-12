@@ -108,13 +108,13 @@ static SoupCookie *SoupCookieFromNS(NSHTTPCookie *nsc)
   }
 }
 
-static void _gswk_get_cookies_done(GObject *src, GAsyncResult *res, gpointer ud)
+static void _gswk_get_all_cookies_done(GObject *src, GAsyncResult *res, gpointer ud)
 {
   WebKitCookieManager *mgr = (WebKitCookieManager *)src;
   _GSWKCookieGAsyncCtx *ctx = (_GSWKCookieGAsyncCtx *)ud;
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
   GError *err = NULL;
-  GList *list = webkit_cookie_manager_get_cookies_finish(mgr, res, &err);
+  GList *list = webkit_cookie_manager_get_all_cookies_finish(mgr, res, &err);
   NSMutableArray *out = [NSMutableArray array];
   for (GList *l = list; l != NULL; l = l->next) {
     NSHTTPCookie *c = NSHTTPCookieFromSoup((SoupCookie *)l->data);
@@ -139,9 +139,10 @@ static void _gswk_get_cookies_done(GObject *src, GAsyncResult *res, gpointer ud)
   }
   _GSWKCookieGAsyncCtx *ctx = [[_GSWKCookieGAsyncCtx alloc] init];
   ctx->block = Block_copy(completionHandler);
-  /* Pass NULL URI to get cookies for all hosts. */
-  webkit_cookie_manager_get_cookies(_cookies, "", NULL,
-                                    _gswk_get_cookies_done, ctx);
+  /* WPE 2.40+ has get_all_cookies which returns the full jar; the
+   * older per-URI get_cookies needed a URI and filtered to it. */
+  webkit_cookie_manager_get_all_cookies(_cookies, NULL,
+                                         _gswk_get_all_cookies_done, ctx);
 }
 
 static void _gswk_void_done(GObject *src, GAsyncResult *res, gpointer ud)

@@ -55,6 +55,12 @@
 - (void)demoCookieInspector:(id)sender;
 - (void)demoHistory:(id)sender;
 
+/* Test-only entry points exposed via WKDEMO_TEST_MODE commands. */
+- (void)_testCookieRoundTripTo:(NSString *)key value:(NSString *)value
+                       domain:(NSString *)domain;
+- (void)_testReadCookies:(void (^)(NSString *result))block;
+- (void)_testSnapshotInto:(void (^)(NSString *result))block;
+
 @end
 
 /* Tiny custom URL scheme handler so the demo's Demo menu can show the

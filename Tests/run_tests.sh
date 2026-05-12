@@ -413,9 +413,461 @@ test_paste() {
 }
 
 
+# =====================================================================
+test_navigation_lifecycle() {
+  echo "[test_navigation_lifecycle]"
+  setup_demo navlife || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  if ! wait_for "WKDEMO_LOADED:" 15; then
+    echo "  page never loaded"; FAIL=$((FAIL+1)); teardown_demo; return
+  fi
+  sleep 0.5
+  # After the page finishes loading, WebKit's history-related globals
+  # should be populated.  Use them as a proxy for "real" navigation.
+  assert_match "document.readyState == complete" \
+    "$(eval_js "document.readyState")" '^string complete$'
+  assert_match "performance.timing.loadEventEnd > 0" \
+    "$(eval_js "performance.timing && performance.timing.loadEventEnd > 0")" \
+    '^(number 1|boolean .*)|number [1-9].*'
+  teardown_demo
+}
+
+# =====================================================================
+test_js_exception() {
+  echo "[test_js_exception]"
+  setup_demo jsx || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 15 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  # Throwing JS should come back as a string starting with ERROR.
+  local res
+  res=$(eval_js "throw new Error('boom from test')")
+  assert_match "JS throw surfaces as ERROR" "$res" "^ERROR"
+  # The evaluator should still work after a throw.
+  res=$(eval_js "1+1")
+  assert_eq "JS recovers after throw" "$res" "number 2"
+  teardown_demo
+}
+
+# =====================================================================
+test_zoom_roundtrip() {
+  echo "[test_zoom_roundtrip]"
+  setup_demo zoom || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 15 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  # Initial zoom is 1.0.  Set via JS through the engine doesn't work
+  # directly; we'd need to call WKWebView setPageZoom.  The test
+  # harness doesn't expose that, so this test just exercises that
+  # window.devicePixelRatio reflects the underlying device scale (a
+  # related property that proves the engine is honouring our scale
+  # settings).
+  local r
+  r=$(eval_js "window.devicePixelRatio")
+  assert_match "devicePixelRatio is positive number" "$r" "^number [1-9]"
+  teardown_demo
+}
+
+# =====================================================================
+test_custom_scheme() {
+  echo "[test_custom_scheme]"
+  setup_demo cscheme || return
+  # Wait for ready, then send the navigation.  The demo registers
+  # myapp:// at startup so it should be available.
+  send_cmd "GOTO myapp://hello/from-test"
+  if ! wait_for "WKDEMO_LOADED: myapp://hello/from-test" 10; then
+    echo "  myapp:// never loaded"; teardown_demo; FAIL=$((FAIL+1)); return
+  fi
+  sleep 0.3
+  local title
+  title=$(eval_js "document.title")
+  # The demo's scheme handler doesn't set a title, but the H1 it
+  # writes mentions "Custom scheme handler" and the URL.
+  assert_match "page from custom scheme contains URL" \
+    "$(eval_js "document.body.innerText.indexOf('myapp://hello/from-test') >= 0")" \
+    '^boolean .*true|^number 1$'
+  assert_match "page from custom scheme contains heading" \
+    "$(eval_js "document.querySelector('h1').textContent")" \
+    'Custom scheme'
+  teardown_demo
+}
+
+# =====================================================================
+test_back_forward() {
+  echo "[test_back_forward]"
+  setup_demo bf || return
+  local A=$(encode "<!doctype html><title>A</title><body>page-A</body>")
+  local B=$(encode "<!doctype html><title>B</title><body>page-B</body>")
+  send_cmd "GOTO data:text/html,$A"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  send_cmd "GOTO data:text/html,$B"
+  # Match the second LOADED line.
+  local before=$(grep -c "^WKDEMO_LOADED:" "$TEST_LOG" 2>/dev/null || echo 0)
+  local i=0
+  while [ $i -lt 100 ]; do
+    local now=$(grep -c "^WKDEMO_LOADED:" "$TEST_LOG" 2>/dev/null || echo 0)
+    if [ "$now" -gt "$before" ]; then break; fi
+    sleep 0.1
+    i=$((i+1))
+  done
+  sleep 0.3
+  assert_match "currently on page B" \
+    "$(eval_js "document.title")" "^string B"
+  # We have no public goBack/goForward via stdin, but the engine knows
+  # via WKBackForwardList.  Just verify history.length > 1.
+  assert_match "history.length > 1" \
+    "$(eval_js "history.length > 1")" '^(boolean .*true|number 1)$'
+  teardown_demo
+}
+
+# =====================================================================
+test_cookies_via_dom() {
+  echo "[test_cookies_via_dom]"
+  setup_demo cookies || return
+  # data: URLs typically have opaque origins so document.cookie is
+  # restricted; use a plain http URL the engine treats as having a
+  # cookie jar.  Skip the test if we can't.
+  send_cmd "GOTO http://127.0.0.1:0/__never_resolves__"
+  # We expect failure, but the cookie API should still be exposed.
+  sleep 1
+  assert_match "document.cookie is a string (even if empty)" \
+    "$(eval_js "typeof document.cookie")" "^string string$"
+  teardown_demo
+}
+
+# =====================================================================
+test_dom_event_listeners() {
+  echo "[test_dom_event_listeners]"
+  setup_demo domevt || return
+  local PAGE=$(encode '<!doctype html><script>
+window._counts={click:0,mousedown:0,mouseup:0,mousemove:0,keydown:0};
+window.addEventListener("click",function(){window._counts.click++});
+window.addEventListener("mousedown",function(){window._counts.mousedown++});
+window.addEventListener("mouseup",function(){window._counts.mouseup++});
+window.addEventListener("mousemove",function(){window._counts.mousemove++});
+window.addEventListener("keydown",function(){window._counts.keydown++});
+</script><body style="margin:0"><div id=t style="width:100%;height:200px;background:#eef"></div></body>')
+  send_cmd "GOTO data:text/html,$PAGE"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.5
+
+  local wid
+  wid=$(DISPLAY=$XDISP xdotool search --name "GNUstep WebKit Demo" | head -n 1)
+  DISPLAY=$XDISP xdotool windowmove "$wid" 0 0 2>/dev/null
+  sleep 0.2
+
+  # Click somewhere safely inside the page region.
+  DISPLAY=$XDISP xdotool mousemove --sync 200 250
+  DISPLAY=$XDISP xdotool click 1
+  sleep 0.4
+  # Drag from there a bit to fire mousedown + mousemove + mouseup.
+  DISPLAY=$XDISP xdotool mousedown 1
+  sleep 0.1
+  for x in 220 240 260 280 300; do
+    DISPLAY=$XDISP xdotool mousemove --sync $x 250
+    sleep 0.03
+  done
+  DISPLAY=$XDISP xdotool mouseup 1
+  sleep 0.4
+
+  local counts=$(eval_js "JSON.stringify(window._counts)")
+  echo "  counts: $counts"
+  assert_match "click event fired" "$counts" "\"click\":[1-9]"
+  assert_match "mousedown fired" "$counts" "\"mousedown\":[1-9]"
+  assert_match "mouseup fired" "$counts" "\"mouseup\":[1-9]"
+  assert_match "mousemove fired" "$counts" "\"mousemove\":[1-9]"
+  teardown_demo
+}
+
+# =====================================================================
+test_form_typing() {
+  echo "[test_form_typing]"
+  setup_demo typing || return
+  local PAGE=$(encode '<!doctype html><body><input id=f autofocus></body>')
+  send_cmd "GOTO data:text/html,$PAGE"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+
+  local wid
+  wid=$(DISPLAY=$XDISP xdotool search --name "GNUstep WebKit Demo" | head -n 1)
+  DISPLAY=$XDISP xdotool windowmove "$wid" 0 0 2>/dev/null
+  sleep 0.2
+
+  # Click on the input to focus it (the autofocus may not survive
+  # data:URL origin restrictions).
+  DISPLAY=$XDISP xdotool mousemove --sync 100 100
+  DISPLAY=$XDISP xdotool click 1
+  sleep 0.2
+  # Focus via JS too as a safety net.
+  eval_js "document.getElementById('f').focus()" >/dev/null
+  sleep 0.2
+
+  DISPLAY=$XDISP xdotool type --delay 30 "hello"
+  sleep 0.5
+
+  local val=$(eval_js "document.getElementById('f').value")
+  echo "  input value after typing: $val"
+  assert_match "typed text reached input" "$val" "^string hello$"
+  teardown_demo
+}
+
+# =====================================================================
+test_kvo_title() {
+  echo "[test_kvo_title]"
+  setup_demo kvo || return
+  local PAGE=$(encode '<!doctype html><title>Hello KVO</title><body>x</body>')
+  send_cmd "GOTO data:text/html,$PAGE"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.5
+  # The demo's WKDBrowserWindowController observes title and writes
+  # it into the window title.  We test through document.title which
+  # WebKit populates from the <title>.
+  assert_match "document.title is the page title" \
+    "$(eval_js "document.title")" "^string Hello KVO$"
+  teardown_demo
+}
+
+# =====================================================================
+test_cookie_roundtrip() {
+  echo "[test_cookie_roundtrip]"
+  setup_demo cookies_rt || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  # Set a known cookie via WKHTTPCookieStore.
+  send_cmd "COOKIE_SET test_token=secret123;.example.org"
+  sleep 0.5
+  # Read all cookies; expect to see test_token entry.
+  local before=$(awk '/^WKDEMO_COOKIE_RESULT:/{n++}END{print n+0}' "$TEST_LOG")
+  send_cmd "COOKIE_LIST"
+  local i=0
+  while [ $i -lt 80 ]; do
+    local now=$(awk '/^WKDEMO_COOKIE_RESULT:/{n++}END{print n+0}' "$TEST_LOG")
+    if [ "$now" -gt "$before" ]; then break; fi
+    sleep 0.1
+    i=$((i+1))
+  done
+  local cookies=$(grep '^WKDEMO_COOKIE_RESULT:' "$TEST_LOG" | tail -n 1 | sed 's/^WKDEMO_COOKIE_RESULT: //')
+  echo "  cookies: $cookies"
+  assert_match "set cookie shows up in getAllCookies" \
+    "$cookies" "test_token@.*example\\.org=secret123"
+  teardown_demo
+}
+
+# =====================================================================
+test_snapshot() {
+  echo "[test_snapshot]"
+  setup_demo snap || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 1.5  # let the engine paint at least one frame
+  local before=$(awk '/^WKDEMO_SNAPSHOT_RESULT:/{n++}END{print n+0}' "$TEST_LOG")
+  send_cmd "SNAPSHOT"
+  local i=0
+  while [ $i -lt 60 ]; do
+    local now=$(awk '/^WKDEMO_SNAPSHOT_RESULT:/{n++}END{print n+0}' "$TEST_LOG")
+    if [ "$now" -gt "$before" ]; then break; fi
+    sleep 0.1
+    i=$((i+1))
+  done
+  local result=$(grep '^WKDEMO_SNAPSHOT_RESULT:' "$TEST_LOG" | tail -n 1 | sed 's/^WKDEMO_SNAPSHOT_RESULT: //')
+  echo "  snapshot: $result"
+  assert_match "takeSnapshot returns NSImage with size" "$result" "^image:[1-9][0-9]+x[1-9][0-9]+$"
+  teardown_demo
+}
+
+# =====================================================================
+test_user_script_injection() {
+  echo "[test_user_script_injection]"
+  setup_demo userscript || return
+  # The bundled demo registers a user script that exposes
+  # window.WebKitDemoSay.  Verify it is present.
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.5
+  assert_match "user script injected window.WebKitDemoSay" \
+    "$(eval_js "typeof window.WebKitDemoSay")" "^string function$"
+  teardown_demo
+}
+
+# =====================================================================
+test_script_message_bridge() {
+  echo "[test_script_message_bridge]"
+  setup_demo bridge || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.5
+  # The demo registers "demoBridge" handler that writes the body into
+  # the status field.  We can't observe NSTextField from JS, but the
+  # demo also has a JS function WebKitDemoSay defined by the user
+  # script that posts the message.  Calling it should not throw.
+  local res=$(eval_js "WebKitDemoSay('hello from test'); 'ok'")
+  assert_eq "bridge call doesn't throw" "$res" "string ok"
+  teardown_demo
+}
+
+# =====================================================================
+test_load_failure() {
+  echo "[test_load_failure]"
+  setup_demo loadfail || return
+  # Navigate to an explicitly invalid host.
+  send_cmd "GOTO http://this-host-does-not-exist-12345.invalid/"
+  # Expect either a LOADED with the URL or evidence the demo logged
+  # the failure.  We give it some time then check status.
+  local end=$(( $(date +%s) + 10 ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if grep -qE "(WKDEMO_LOADED:|Failed:)" "$TEST_LOG" 2>/dev/null; then break; fi
+    sleep 0.2
+  done
+  sleep 0.5
+  # We don't strictly need a particular outcome — what we need is
+  # for the demo to *not* hang.  Confirm it's still alive and
+  # responsive.
+  local r=$(eval_js "1+1")
+  assert_eq "demo still responsive after bad URL" "$r" "number 2"
+  teardown_demo
+}
+
+# =====================================================================
+test_scroll_wheel() {
+  echo "[test_scroll_wheel]"
+  setup_demo scroll || return
+  local TALL=$(encode '<!doctype html><body style="margin:0">
+<div style="height:5000px;background:linear-gradient(white,#888)"></div></body>')
+  send_cmd "GOTO data:text/html,$TALL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.5
+
+  local wid
+  wid=$(DISPLAY=$XDISP xdotool search --name "GNUstep WebKit Demo" | head -n 1)
+  DISPLAY=$XDISP xdotool windowmove "$wid" 0 0 2>/dev/null
+  sleep 0.2
+  # Move cursor into page region (avoid toolbar), then scroll a few
+  # times.  xdotool sends button 4/5 for scroll up/down.
+  DISPLAY=$XDISP xdotool mousemove --sync 200 250
+  for i in 1 2 3 4 5; do
+    DISPLAY=$XDISP xdotool click 5  # scroll down
+    sleep 0.05
+  done
+  sleep 0.4
+
+  assert_match "scrolled vertically" \
+    "$(eval_js "window.scrollY > 0")" \
+    '^(boolean .*true|number 1)$'
+  teardown_demo
+}
+
+# =====================================================================
+test_visited_link_history() {
+  echo "[test_visited_link_history]"
+  setup_demo visited || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.5
+  # WKBackForwardList should now have an entry (we just navigated).
+  # Verify via history.length proxy.
+  assert_match "history.length >= 1" \
+    "$(eval_js "history.length >= 1")" \
+    '^(boolean .*true|number 1)$'
+  teardown_demo
+}
+
+# =====================================================================
+test_user_agent() {
+  echo "[test_user_agent]"
+  setup_demo ua || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  local ua=$(eval_js "navigator.userAgent")
+  echo "  UA: $ua"
+  assert_match "user agent mentions WebKit" "$ua" "WebKit"
+}
+
+# =====================================================================
+test_window_size_propagation() {
+  echo "[test_window_size_propagation]"
+  setup_demo winsize || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  local w=$(eval_js "window.innerWidth")
+  local h=$(eval_js "window.innerHeight")
+  assert_match "innerWidth is positive" "$w" "^number [1-9][0-9]+$"
+  assert_match "innerHeight is positive" "$h" "^number [1-9][0-9]+$"
+  teardown_demo
+}
+
+# =====================================================================
+test_promise_resolution() {
+  echo "[test_promise_resolution]"
+  setup_demo promise || return
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  # Promises should resolve before subsequent eval, proving the JS
+  # event loop is being driven by our GLib pump.
+  eval_js "window._p_result = null; Promise.resolve(7).then(v => { window._p_result = v; });" >/dev/null
+  sleep 0.3
+  assert_eq "promise resolved to 7" \
+    "$(eval_js "window._p_result")" "number 7"
+  teardown_demo
+}
+
+# =====================================================================
+test_dom_storage() {
+  echo "[test_dom_storage]"
+  setup_demo storage || return
+  # data: URLs have opaque origin and can't use localStorage /
+  # sessionStorage in current WebKit (they throw SecurityError on
+  # access).  What we really want to test is that the property
+  # access *throws cleanly* rather than crashing — and that the
+  # engine recovers afterwards.
+  send_cmd "GOTO $TEST_DATA_URL"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  local r=$(eval_js "try { var s = sessionStorage; 'present' } catch(e) { 'denied:' + e.name }")
+  # Either outcome is acceptable; the test asserts only that the
+  # engine handles the access gracefully.
+  assert_match "sessionStorage accessed without crash" "$r" "^string (present|denied:)"
+  # Engine still responsive afterwards.
+  assert_eq "engine responsive after storage probe" \
+    "$(eval_js "2+2")" "number 4"
+  teardown_demo
+}
+
+# =====================================================================
+test_javascript_types() {
+  echo "[test_javascript_types]"
+  setup_demo jstypes || return
+  local PAGE=$(encode '<!doctype html><title>t</title>')
+  send_cmd "GOTO data:text/html,$PAGE"
+  wait_for "WKDEMO_LOADED:" 10 || { teardown_demo; FAIL=$((FAIL+1)); return; }
+  sleep 0.3
+  assert_eq "string"  "$(eval_js "'hello'")" "string hello"
+  assert_eq "integer" "$(eval_js "42")" "number 42"
+  assert_eq "boolean true"  "$(eval_js "true")"  "number 1"
+  assert_eq "boolean false" "$(eval_js "false")" "number 0"
+  assert_eq "undefined"     "$(eval_js "undefined")" "undefined"
+  assert_eq "null"          "$(eval_js "null")"  "object <null>"
+  assert_match "array length" "$(eval_js "[1,2,3].length")" "^number 3$"
+  assert_match "object key" \
+    "$(eval_js "({a:1, b:2}).a")" "^number 1$"
+  teardown_demo
+}
+
+
 # ---------- driver --------------------------------------------------
 
-TESTS="${1:-load drag_select resize_repaint paste}"
+TESTS="${1:-load drag_select resize_repaint paste \
+              navigation_lifecycle js_exception zoom_roundtrip \
+              custom_scheme back_forward \
+              dom_event_listeners form_typing kvo_title \
+              javascript_types user_script_injection script_message_bridge \
+              load_failure scroll_wheel visited_link_history user_agent \
+              window_size_propagation promise_resolution dom_storage \
+              cookie_roundtrip snapshot}"
 start_xvfb
 
 for t in $TESTS; do

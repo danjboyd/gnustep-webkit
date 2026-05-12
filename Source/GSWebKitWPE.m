@@ -310,14 +310,12 @@ struct GSWPE_PendingEval {
   NSString *scheme;
   while ((scheme = [e nextObject]) != nil) {
     id handler = [handlers objectForKey:scheme];
-    /* Allocate a tiny struct mirroring _GSWKSchemeReg in
-     * WKURLSchemeTask.m.  Keep it ABI-equivalent. */
     struct _gswk_reg { id handler; id webView; } *reg = g_new0(struct _gswk_reg, 1);
-    reg->handler = handler;          /* weak, ARC-equivalent assignment */
-    reg->webView = nil;              /* host (WKWebView) — filled in below if available */
-    if ([[self host] isKindOfClass:[NSObject class]]) {
-      reg->webView = [self host];
-    }
+    /* Retain the handler so it survives even if the configuration's
+     * dictionary is mutated.  Released by the GDestroyNotify when
+     * WebKit replaces the registration. */
+    reg->handler = [handler retain];
+    reg->webView = [self host];   /* may be nil here; set in setHost: */
     webkit_web_context_register_uri_scheme(ctx, [scheme UTF8String],
         (WebKitURISchemeRequestCallback)_GSWKSchemeCallback,
         reg,

@@ -104,7 +104,12 @@ struct _GSWKSchemeReg {
 
 void _GSWKSchemeReg_Free(void *p)
 {
-  g_free(p);
+  struct _GSWKSchemeReg *reg = p;
+  if (reg != NULL) {
+    [reg->handler release];   /* matched with retain in
+                                 installSchemeHandlersFrom: */
+    g_free(reg);
+  }
 }
 
 void _GSWKSchemeCallback(void *req_void, void *user_data)
@@ -114,7 +119,7 @@ void _GSWKSchemeCallback(void *req_void, void *user_data)
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
   _GSWKURLSchemeTask *task = [[[_GSWKURLSchemeTask alloc] _initWithRequest:req]
                                   autorelease];
-  if ([reg->handler respondsToSelector:@selector(webView:startURLSchemeTask:)]) {
+  if (reg && [reg->handler respondsToSelector:@selector(webView:startURLSchemeTask:)]) {
     [reg->handler webView:reg->webView startURLSchemeTask:task];
   } else {
     NSError *err = [NSError errorWithDomain:@"WKURLScheme" code:1 userInfo:nil];
