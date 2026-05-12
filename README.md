@@ -178,5 +178,12 @@ file issues.
 
 ## License
 
-LGPL‑2.1+, matching GNUstep's `libs-gui` and `libs-OpenSave`. See
-[`COPYING.LIB`](COPYING.LIB).
+LGPL‑2.0‑or‑later, matching GNUstep's `libs-gui` and `libs-OpenSave`.
+See [`COPYING.LIB`](COPYING.LIB).
+
+Every runtime dependency is LGPL‑compatible or permissively
+licensed; the engine itself (`libwpewebkit-2.0`) is dual
+LGPL‑2.0+ / BSD‑2‑Clause.  Full breakdown for packagers in
+[`Documentation/Licensing.md`](Documentation/Licensing.md), including
+what downstream MIT / proprietary / GPL apps can do with the
+framework.
