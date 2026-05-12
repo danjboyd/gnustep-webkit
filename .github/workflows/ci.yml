@@ -21,7 +21,7 @@ jobs:
             build-essential clang make pkg-config \
             gnustep-make gnustep-base-runtime \
             libgnustep-base-dev libgnustep-gui-dev \
-            libobjc4 libobjc-14-dev libobjc2-dev \
+            libobjc4 libobjc-14-dev gnustep-clang-libobjc2 \
             libwpewebkit-2.0-dev libwpe-1.0-dev libwpebackend-fdo-1.0-dev \
             libsoup-3.0-dev libxkbcommon-dev libwayland-dev \
             python3 ca-certificates \
