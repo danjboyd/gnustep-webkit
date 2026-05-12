@@ -1,106 +1,46 @@
-# GNUstep WebKit
+# gnustep-webkit
 
-`gnustep-webkit` is an Objective-C implementation of Apple's WebKit
-framework (`WKWebView` and friends) for GNUstep, backed by the
-[WPE WebKit](https://wpewebkit.org/) engine.
+> **Status:** v0.1 — preview / call‑for‑feedback.
+> All features in the demo screenshot below work today; the rough
+> edges are listed honestly under [Limitations](#limitations).
+> See [CONTRIBUTING.md](CONTRIBUTING.md) for how to help.
 
-The goal is letting any GNUstep AppKit application embed full web
-content with the **same API surface used on macOS / iOS**, so source
-written against `<WebKit/WebKit.h>` for Apple platforms compiles and
-runs unchanged on GNUstep.
+A reimplementation of Apple's WebKit framework — `WKWebView` and
+friends — for GNUstep, rendered by [WPE WebKit](https://wpewebkit.org/).
 
-The project is structured for eventual upstream into the GNUstep
-project (alongside `libs-gui` / `libs-OpenSave`); the code is plain
-Objective-C with manual retain/release — no ARC, no Cocoa-runtime-only
-features — and the public headers are LGPL-2.1+.
+The goal is **source compatibility with `<WebKit/WebKit.h>` on Apple
+platforms**, so AppKit code that already uses `WKWebView` on macOS /
+iOS can compile and run on GNUstep without rewriting the web‑view
+layer.  The long‑term destination is acceptance into mainline GNUstep
+as an officially maintained framework next to `libs-gui` /
+`libs-OpenSave`.
 
-## Status
+![Screenshot of the bundled WebKitDemo.app rendering gnustep.org —
+toolbar with back/forward/reload, an address bar, an inline JS
+evaluator, and the live web page below.](Documentation/screenshot.png)
 
-Working v1: a real WPE-backed `WKWebView` paints into an `NSView`, the
-bundled demo loads HTTPS pages end-to-end, and the API surface covers
-what most embedders reach for.
+The bundled `WebKitDemo.app` is a minimal browser exercising the
+public API: paste from a password manager, drag‑select text, right‑
+click context menus that vary by what's under the cursor, Cmd+F find
+bar, Cmd+= / Cmd+- zoom, hover dropdowns, Cmd+N for additional
+windows, and a Demo menu showing the custom URL scheme handler,
+cookie inspector, file picker, and back/forward history.
 
-### What works
+## Quick start
 
-Behaviour:
-
-- Real WebKit rendering via WPE + WPEBackend-FDO (SHM exportable
-  buffers → `NSBitmapImageRep` via direct memcpy, no per-pixel
-  swizzle)
-- Mouse, scroll, keyboard input (Unicode keysyms for non-ASCII)
-- Hover (`:hover`, `onmouseover`, `mouseenter`) via `NSTrackingRect`
-- Cursor shape changes (`I-beam` over text, hand over links)
-- Drag-to-select (via JS `Selection.setBaseAndExtent` shim, because
-  Debian's WPE is built with `ENABLE_DRAG_SUPPORT=OFF`)
-- Resize repaint with no visual artifacts during a live drag
-- Clipboard Ctrl+V / Ctrl+C / Ctrl+X through `NSPasteboard` (with
-  `xclip` fallback for X11 selection desyncs)
-- Right-click context menu, hit-test aware: Cut/Copy/Paste over
-  editables, Copy Link / Open Image / etc. over the right element
-- File chooser (`<input type=file>`) via `NSOpenPanel`
-- Downloads via `NSSavePanel` (with full `WKDownload` /
-  `WKDownloadDelegate` API)
-- Find in page
-- JS bridge in both directions (`window.webkit.messageHandlers.NAME`)
-- KVO on `title`, `URL`, `estimatedProgress`, `loading`
-
-API surface implemented:
-
-`WKWebView`, `WKWebViewConfiguration`, `WKPreferences`,
-`WKProcessPool`, `WKUserContentController`, `WKUserScript`,
-`WKScriptMessage(Handler)`, `WKNavigation(Action|Response|Delegate)`,
-`WKUIDelegate`, `WKBackForwardList(Item)`, `WKFrameInfo`,
-`WKSecurityOrigin`, `WKContentWorld`, `WKWebsiteDataStore`,
-`WKHTTPCookieStore`, `WKURLSchemeHandler`,
-`WKContentRuleList(Store)`, `WKDownload(Delegate)`,
-`WKFindConfiguration` / `WKFindResult`, `WKSnapshotConfiguration` /
-`WKPDFConfiguration`, `WKError`.
-
-### Known v1 follow-ups
-
-| | |
-| --- | --- |
-| Exit-time `_exit(0)` workaround | `applicationWillTerminate:` skips AppKit's pool drain to avoid a use-after-free inside libgnustep-gui's terminate path. Users don't see it. |
-| PDF / print stubbed | `webkit_print_operation` is GTK-port only in WPE 2.48; `createPDFWithConfiguration:` reports not-supported. |
-| Engine-native drag-select | Debian's libwpewebkit has `ENABLE_DRAG_SUPPORT=OFF`; we work around with JS. Custom WPE build would remove the need. |
-| CJK IME | Latin-1 / Cyrillic / Greek work via Unicode keysyms; CJK preedit needs `WebKitInputMethodContext` ↔ `NSTextInputClient`. |
-| EGL/dma-buf rendering | Currently CPU/SHM (memcpy fast path, no swizzle). EGL textures are v2. |
-| Polling GLib pump | 60 Hz `NSTimer`. v2: prepare/query/check/dispatch driven by `NSRunLoop`. |
-| Accessibility | Stub (`-accessibilityRoleDescription` returns "web content"). Real AT-SPI ↔ NSAccessibility bridge is a project of its own. |
-
-See `Documentation/Overview.md` and `Documentation/BUILD.md` for the
-architectural details and per-distro install instructions.
-
-## Layout
-
-```
-Headers/WebKit/        Public umbrella + per-class headers
-Source/                Framework implementation
-  WK*.m                  Apple-shaped facade classes
-  GSWebKitBackend.[hm]   Engine abstraction protocol
-  GSWebKitWPE.[hm]       libwpe + WPEBackend-FDO + libWPEWebKit-2.0 bridge
-  GSWebKitInternal.h     Cross-file private declarations
-Demo/                  WebKitDemo.app — minimal browser
-Tests/run_tests.sh     Xvfb integration tests (7 passing)
-Tests/Unit/            ObjC unit tests for value-type classes (34 passing)
-Documentation/         Overview + build instructions
-configure              pkg-config probing → config.make
-```
-
-## Build
+Tested on Debian 13 (Trixie).  Equivalent packages exist on Fedora,
+Arch, and openSUSE — see [`Documentation/BUILD.md`](Documentation/BUILD.md)
+for per‑distro names.
 
 ```sh
 sudo apt install gnustep-make gnustep-base-runtime libgnustep-gui-dev \
-                 libwpewebkit-2.0-dev libwpe-1.0-dev libwpebackend-fdo-1.0-dev
+                 libwpewebkit-2.0-dev libwpe-1.0-dev libwpebackend-fdo-1.0-dev \
+                 xclip
 ./configure
 . /usr/GNUstep/System/Library/Makefiles/GNUstep.sh
 make
 make -C Demo run
 ```
-
-Equivalent packages exist on Fedora (`wpewebkit-devel libwpe-devel
-wpebackend-fdo-devel`) and Arch (`wpewebkit libwpe wpebackend-fdo`).
-See `Documentation/BUILD.md` for the full matrix.
 
 ## Consumer example
 
@@ -110,15 +50,13 @@ See `Documentation/BUILD.md` for the full matrix.
 
 @interface MyController : NSObject <WKNavigationDelegate>
 @end
-
 @implementation MyController
 - (void)applicationDidFinishLaunching:(NSNotification *)note
 {
   NSWindow *win = [[NSWindow alloc]
       initWithContentRect:NSMakeRect(0, 0, 1024, 768)
                 styleMask:NSTitledWindowMask|NSClosableWindowMask|NSResizableWindowMask
-                  backing:NSBackingStoreBuffered
-                    defer:NO];
+                  backing:NSBackingStoreBuffered defer:NO];
   WKWebView *web = [[WKWebView alloc]
       initWithFrame:[[win contentView] bounds]];
   [web setNavigationDelegate:self];
@@ -139,18 +77,106 @@ See `Documentation/BUILD.md` for the full matrix.
 
 Build with `-lWebKit -lgnustep-gui -lgnustep-base -ldispatch -fblocks`.
 
-## Why WPE instead of WebKitGTK?
+## Features
+
+Behaviour:
+
+- Real WebKit rendering via WPE + WPEBackend-FDO
+- Mouse / scroll / keyboard input (Unicode keysyms; F1‑F12;
+  modifier‑only keypress events via `flagsChanged:`)
+- Hover (`:hover`, `onmouseover`, `mouseenter`) and cursor shape
+  changes (I‑beam over text, hand over links)
+- Drag‑to‑select text (via JS shim, see [Limitations](#limitations))
+- Resize repaint without artifacts
+- Clipboard `Ctrl+C` / `Ctrl+V` / `Ctrl+X` through `NSPasteboard`
+  (with `xclip` fallback for X11/Wayland selection desync)
+- Hit‑test aware right‑click menu (Cut/Copy/Paste over editables;
+  Copy Link / Open Image / etc. over other targets)
+- Find in page (`Cmd+F`)
+- Page zoom (`Cmd+=` / `Cmd+-` / `Cmd+0`)
+- File chooser (`<input type=file>`) via `NSOpenPanel`
+- Downloads via `NSSavePanel` (full `WKDownload` + `WKDownloadDelegate`)
+- Custom URL schemes (`myapp://...`)
+- JS↔native bridge in both directions
+- KVO on `title`, `URL`, `estimatedProgress`, `loading`
+
+API surface (Apple‑compatible):
+
+`WKWebView`, `WKWebViewConfiguration`, `WKPreferences`,
+`WKProcessPool`, `WKUserContentController`, `WKUserScript`,
+`WKScriptMessage(Handler)`, `WKNavigation(Action|Response|Delegate)`,
+`WKUIDelegate`, `WKBackForwardList(Item)`, `WKFrameInfo`,
+`WKSecurityOrigin`, `WKContentWorld`, `WKWebsiteDataStore`,
+`WKHTTPCookieStore`, `WKURLSchemeHandler` / `WKURLSchemeTask`,
+`WKContentRuleList(Store)`, `WKDownload(Delegate)`,
+`WKFindConfiguration` / `WKFindResult`, `WKSnapshotConfiguration` /
+`WKPDFConfiguration`, `WKError`.
+
+## Tests
+
+```sh
+make -C Tests/Unit run        # 34 unit tests (value-type classes)
+./Tests/run_tests.sh          # 7 integration tests (Xvfb + xdotool)
+```
+
+The integration harness boots its own Xvfb, starts `gpbs`, drives
+the demo via a stdin command channel (`GOTO` / `EVAL` / `RESIZE` /
+`QUIT`), synthesises mouse and keyboard events with `xdotool`, and
+asserts via JavaScript evaluation against the loaded page.
+
+## Limitations
+
+Things that don't work yet and the reason:
+
+| Item | Why | Tracking |
+|---|---|---|
+| Engine‑native drag‑select | Debian's `libwpewebkit-2.0` is built with `ENABLE_DRAG_SUPPORT=OFF` (which the CMake comment literally says "includes selection of text with mouse"). We work around with a JS shim. | Custom WPE build needed |
+| Engine‑native drag‑and‑drop | Same flag | Custom WPE build needed |
+| Engine clipboard | `_wpe_pasteboard_interface` isn't exported by WPEBackend‑FDO, so the engine's `Ctrl+V` reads an empty clipboard. We bypass via `NSPasteboard`. | Custom WPE build needed |
+| PDF / print | The WPE port doesn't ship `webkit_print_operation` at all | Custom WPE build (and WPE upstream patch) |
+| CJK IME preedit | Needs `NSTextInputClient` ↔ `WebKitInputMethodContext` plumbing | Open contribution |
+| EGL / dma‑buf rendering | Currently CPU‑side SHM. EGL textures would give us hardware compositing for video/animation. | Open contribution |
+| `g_main_context` integration into `NSRunLoop` | 60 Hz `NSTimer` works fine; a pollfd‑driven version was tried but introduced WebKit IPC reply latency. | Open contribution |
+| Process‑exit clean teardown | `_exit(0)` workaround avoids a use‑after‑free in libgnustep‑gui's autorelease drain during `terminate:`. | Open contribution (libs‑gui side) |
+| Accessibility | `-accessibilityRoleDescription` stub. Real AT‑SPI ↔ `NSAccessibility` bridge is a separate project. | Open contribution |
+| In‑window tab bar | Demo has `Cmd+N` for new window; full tabs UI is demo polish, not framework work. | Open contribution |
+
+Architectural details and per‑distro install notes:
+[`Documentation/Overview.md`](Documentation/Overview.md) and
+[`Documentation/BUILD.md`](Documentation/BUILD.md).
+
+## Layout
+
+```
+Headers/WebKit/        Public umbrella + per-class headers
+Source/                Framework implementation
+  WK*.m                  Apple-shaped facade classes
+  GSWebKitBackend.{h,m}  Engine abstraction protocol
+  GSWebKitWPE.{h,m}      libwpe / WPEBackend-FDO / libWPEWebKit bridge
+Demo/                  WebKitDemo.app — minimal browser
+Tests/run_tests.sh     Xvfb integration tests
+Tests/Unit/            ObjC unit tests for value-type classes
+Documentation/         Architecture + build instructions + screenshot
+configure              pkg-config probing → config.make
+```
+
+## Why WPE rather than WebKitGTK?
 
 Both ports share the same upstream WebKit, but WPE was designed
-explicitly for embedding into something that isn't GTK. We register a
-SHM rendering client; WPE delivers `wl_shm_buffer`s of CPU-side
-pixels; we hand those to `NSBitmapImageRep` and draw through
-`NSView`. No GTK widget hierarchy, no X11 window reparenting, no
-hidden `GtkWindow` — just a flat seam between WPE and AppKit. The
-tradeoff was more upfront work for the backend; the payoff is a clean
-architectural boundary appropriate for upstreaming.
+explicitly for embedding into something that isn't GTK.  We register
+a SHM rendering client; WPE delivers `wl_shm_buffer`s of pixels; we
+hand those to `NSBitmapImageRep` and draw through `NSView`.  No GTK
+widget hierarchy, no X11 window reparenting, no hidden `GtkWindow` —
+just a flat seam between WPE and AppKit, appropriate for
+upstreaming.
+
+## Contributing
+
+Patches very welcome.  See [CONTRIBUTING.md](CONTRIBUTING.md) for
+project scope, what's open for help, coding style, and how to
+file issues.
 
 ## License
 
-LGPL-2.1+, matching GNUstep's `libs-gui` and `libs-OpenSave`. See
-`COPYING.LIB`.
+LGPL‑2.1+, matching GNUstep's `libs-gui` and `libs-OpenSave`. See
+[`COPYING.LIB`](COPYING.LIB).

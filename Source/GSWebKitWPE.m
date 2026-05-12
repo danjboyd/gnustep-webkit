@@ -77,7 +77,7 @@ static void GSWPE_OnMouseTargetChanged(WebKitWebView *view,
 static gboolean GSWPE_OnRunFileChooser(WebKitWebView *view,
                                        WebKitFileChooserRequest *request,
                                        gpointer ud);
-static void     GSWPE_OnDownloadStarted(WebKitWebContext *ctx,
+static void     GSWPE_OnDownloadStarted(GObject *source,
                                         WebKitDownload *download,
                                         gpointer ud);
 static gboolean GSWPE_OnDownloadDecideDestination(WebKitDownload *download,
@@ -272,9 +272,14 @@ struct GSWPE_PendingEval {
   _signalRunFileChooser = g_signal_connect(_view, "run-file-chooser",
                                            G_CALLBACK(GSWPE_OnRunFileChooser), self);
 
-  WebKitWebContext *ctx = webkit_web_view_get_context(_view);
-  _signalDownloadStarted = g_signal_connect(ctx, "download-started",
-                                            G_CALLBACK(GSWPE_OnDownloadStarted), self);
+  /* In WPE 2.x the download-started signal lives on
+   * WebKitNetworkSession, not WebKitWebContext (where it was in older
+   * versions).  Connect to the default session. */
+  WebKitNetworkSession *netSession = webkit_network_session_get_default();
+  if (netSession != NULL) {
+    _signalDownloadStarted = g_signal_connect(netSession, "download-started",
+                                              G_CALLBACK(GSWPE_OnDownloadStarted), self);
+  }
 
   /* Pump GLib at ~60Hz.  When there are no events the iteration is
    * cheap (no syscalls); when WebKit is animating, this gives us
@@ -390,8 +395,10 @@ struct GSWPE_PendingEval {
     if (_signalMouseTarget)     g_signal_handler_disconnect(_view, _signalMouseTarget);
     if (_signalRunFileChooser)  g_signal_handler_disconnect(_view, _signalRunFileChooser);
     if (_signalDownloadStarted) {
-      WebKitWebContext *ctx = webkit_web_view_get_context(_view);
-      if (ctx != NULL) g_signal_handler_disconnect(ctx, _signalDownloadStarted);
+      WebKitNetworkSession *netSession = webkit_network_session_get_default();
+      if (netSession != NULL) {
+        g_signal_handler_disconnect(netSession, _signalDownloadStarted);
+      }
       _signalDownloadStarted = 0;
     }
   }
@@ -1308,9 +1315,9 @@ static void GSWPE_DownloadCtxFree(gpointer data, GClosure *closure)
 }
 
 static void
-GSWPE_OnDownloadStarted(WebKitWebContext *ctx, WebKitDownload *download, gpointer ud)
+GSWPE_OnDownloadStarted(GObject *source, WebKitDownload *download, gpointer ud)
 {
-  (void)ctx;
+  (void)source;
   GSWebKitWPE *self = (GSWebKitWPE *)ud;
 
   /* Hook the per-download signals.  Each gets its own context so we
