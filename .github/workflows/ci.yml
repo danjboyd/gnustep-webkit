@@ -35,6 +35,11 @@ jobs:
 
       - name: Build framework + demo
         shell: bash
+        env:
+          CC: clang
+          CXX: clang++
+          # gnustep-make picks up the compiler from these:
+          OBJC: clang
         run: |
           . /usr/share/GNUstep/Makefiles/GNUstep.sh \
             || . /usr/GNUstep/System/Library/Makefiles/GNUstep.sh
@@ -42,6 +47,9 @@ jobs:
 
       - name: Run unit tests
         shell: bash
+        env:
+          CC: clang
+          OBJC: clang
         run: |
           . /usr/share/GNUstep/Makefiles/GNUstep.sh \
             || . /usr/GNUstep/System/Library/Makefiles/GNUstep.sh
