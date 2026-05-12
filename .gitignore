@@ -1,0 +1,13 @@
+obj/
+*.o
+*.lo
+*.la
+*.so
+*.so.*
+*.a
+*.dylib
+WebKitDemo.app/
+debug.log
+stamp.make
+*.tmp
+*.orig
