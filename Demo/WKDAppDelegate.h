@@ -12,8 +12,9 @@
 
 @interface WKDAppDelegate : NSObject <NSApplicationDelegate>
 {
-  WKDBrowserWindowController *_browser;
+  NSMutableArray *_browsers;
 }
+- (void)newBrowserWindow:(id)sender;
 @end
 
 #endif

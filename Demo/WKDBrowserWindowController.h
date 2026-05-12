@@ -29,6 +29,12 @@
   NSTextField        *_statusField;
   NSFileHandle       *_stdinHandle;     /* only used in test mode */
   BOOL                _testMode;
+
+  /* Find bar (hidden by default; Cmd/Ctrl+F shows it). */
+  NSView             *_findBar;
+  NSTextField        *_findField;
+  NSTextField        *_findStatus;
+  BOOL                _findBarVisible;
 }
 
 - (void)goToAddress:(id)sender;
@@ -37,7 +43,24 @@
 - (void)reload:(id)sender;
 - (void)stopLoading:(id)sender;
 - (void)evaluateJS:(id)sender;
+- (void)showFindBar:(id)sender;
+- (void)hideFindBar:(id)sender;
+- (void)findNext:(id)sender;
+- (void)findPrevious:(id)sender;
+- (void)zoomIn:(id)sender;
+- (void)zoomOut:(id)sender;
+- (void)zoomReset:(id)sender;
+- (void)demoFileChooser:(id)sender;
+- (void)demoCustomScheme:(id)sender;
+- (void)demoCookieInspector:(id)sender;
+- (void)demoHistory:(id)sender;
 
+@end
+
+/* Tiny custom URL scheme handler so the demo's Demo menu can show the
+ * registration round-trip working.  Responds to myapp://* with a
+ * canned HTML page that includes the URL it was loaded from. */
+@interface _WKDAppSchemeHandler : NSObject <WKURLSchemeHandler>
 @end
 
 #endif

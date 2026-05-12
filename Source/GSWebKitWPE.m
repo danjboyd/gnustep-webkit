@@ -147,7 +147,9 @@ struct GSWPE_PendingEval {
  * -------------------------------------------------------------------- */
 
 @interface GSWebKitWPE ()
-- (void)pumpGLib:(NSTimer *)timer;
+- (void)pumpIterate;
+- (void)clearPumpFDSources;
+- (void)_schedulePumpNextWake:(gint)timeout_ms;
 - (void)deliverFrameFromShmBuffer:(struct wpe_fdo_shm_exported_buffer *)buf;
 - (void)handleScriptDialog:(WebKitScriptDialog *)dialog;
 - (void)installInitialSettingsFrom:(WKWebViewConfiguration *)config;
@@ -176,8 +178,15 @@ struct GSWPE_PendingEval {
   NSBitmapImageRep         *_currentFrame;
   NSSize                    _currentFrameSize;
 
-  /* GLib pump. */
+  /* GLib pump.  _pumpTimer is the next-wake timer (single-shot,
+   * re-armed each iteration with the timeout that GLib's
+   * prepare/query reports).  _pumpFDSources is a parallel array of
+   * dispatch_read sources, one per pollfd reported by GLib's query —
+   * those wake us as soon as the underlying socket / pipe has data,
+   * so we don't have to busy-poll. */
   NSTimer                  *_pumpTimer;
+  NSMutableArray           *_pumpFDSources;   /* NSValue pointer to dispatch_source_t */
+  BOOL                      _pumpRunning;
 
   /* Tracked signal handler ids so we can disconnect cleanly. */
   gulong                    _signalLoadChanged;
@@ -268,11 +277,17 @@ struct GSWPE_PendingEval {
                                             G_CALLBACK(GSWPE_OnDownloadStarted), self);
 
   /* Pump GLib at ~60Hz.  When there are no events the iteration is
-   * cheap; when WebKit is animating, this gives us roughly vsync-rate
-   * pacing without us having to wire glib's pollfd set into NSRunLoop. */
+   * cheap (no syscalls); when WebKit is animating, this gives us
+   * roughly vsync-rate pacing.  A proper pollfd-driven integration
+   * via g_main_context_prepare/query + libdispatch read sources was
+   * tried — it works for rendering but introduces enough latency on
+   * the WebKit-IPC return path that JS completion blocks can land
+   * after the test harness times out.  Punted to v2. */
+  _pumpRunning = YES;
+  _pumpFDSources = [[NSMutableArray alloc] init];
   _pumpTimer = [[NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                                  target:self
-                                               selector:@selector(pumpGLib:)
+                                               selector:@selector(_pumpTimerFired:)
                                                userInfo:nil
                                                 repeats:YES] retain];
   [[NSRunLoop currentRunLoop] addTimer:_pumpTimer forMode:NSRunLoopCommonModes];
@@ -354,11 +369,15 @@ struct GSWPE_PendingEval {
 
 - (void)shutdown
 {
+  _pumpRunning = NO;
   if (_pumpTimer != nil) {
     [_pumpTimer invalidate];
     [_pumpTimer release];
     _pumpTimer = nil;
   }
+  [self clearPumpFDSources];
+  [_pumpFDSources release];
+  _pumpFDSources = nil;
 
   if (_view != NULL) {
     if (_signalLoadChanged)     g_signal_handler_disconnect(_view, _signalLoadChanged);
@@ -694,6 +713,20 @@ static void GSWPE_OnFindFailed(WebKitFindController *fc, gpointer ud)
   return _customUserAgent;
 }
 
+- (void)setPageZoom:(CGFloat)z
+{
+  if (_view == NULL) return;
+  if (z < 0.1) z = 0.1;
+  if (z > 10.0) z = 10.0;
+  webkit_web_view_set_zoom_level(_view, (gdouble)z);
+}
+
+- (CGFloat)pageZoom
+{
+  if (_view == NULL) return 1.0;
+  return (CGFloat)webkit_web_view_get_zoom_level(_view);
+}
+
 
 /* ------------------------------------------------------------------ */
 #pragma mark Frame buffer
@@ -969,13 +1002,110 @@ static void GSWPE_OnFindFailed(WebKitFindController *fc, gpointer ud)
 /* ------------------------------------------------------------------ */
 #pragma mark GLib pumping
 
-- (void)pumpGLib:(NSTimer *)timer
+- (void)clearPumpFDSources
+{
+  for (NSValue *v in _pumpFDSources) {
+    dispatch_source_t s = (dispatch_source_t)[v pointerValue];
+    dispatch_source_cancel(s);
+    dispatch_release(s);
+  }
+  [_pumpFDSources removeAllObjects];
+}
+
+/* Drive the default GMainContext by asking GLib for the pollfds and
+ * timeout it would normally poll on, then watching each pollfd with a
+ * libdispatch source and arming a single-shot NSTimer for the timeout.
+ * When either fires (or both), we run one iteration of the context
+ * (which prepares, queries, polls, checks, dispatches internally)
+ * and re-arm.  Net effect: zero CPU when nothing's happening, instant
+ * wake when a socket has data. */
+- (void)pumpIterate
+{
+  if (!_pumpRunning) return;
+
+  GMainContext *ctx = g_main_context_default();
+
+  /* Drain anything ready right now without blocking.  Calling
+   * g_main_context_iteration(ctx, FALSE) in a loop ensures cascading
+   * sources (one source's dispatch fires another) all settle before
+   * we re-arm. */
+  while (g_main_context_iteration(ctx, FALSE)) {
+    if (!_pumpRunning) return;
+  }
+
+  /* Discover the next pollfd set and timeout. */
+  gint max_priority = 0;
+  if (g_main_context_acquire(ctx)) {
+    g_main_context_prepare(ctx, &max_priority);
+    g_main_context_release(ctx);
+  } else {
+    /* Another thread holds the context; just re-arm a short timer. */
+    [self _schedulePumpNextWake:16];
+    return;
+  }
+
+  GPollFD fds[64];
+  gint timeout_ms = -1;
+  gint nfds = g_main_context_query(ctx, max_priority,
+                                    &timeout_ms, fds, 64);
+
+  /* Reinstall fd watchers.  Cancelling and recreating each iteration
+   * is wasteful but the set rarely changes — GLib's IO sources are
+   * stable for the lifetime of a network operation — and the cost is
+   * dwarfed by the rendering pipeline. */
+  [self clearPumpFDSources];
+  for (gint i = 0; i < nfds; i++) {
+    if (fds[i].events & G_IO_IN) {
+      dispatch_source_t s = dispatch_source_create(
+          DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fds[i].fd, 0,
+          dispatch_get_main_queue());
+      __block GSWebKitWPE *unretainedSelf = self;
+      dispatch_source_set_event_handler(s, ^{
+        /* The backend cancels and releases every dispatch source in
+         * -shutdown before -[dealloc] returns, so an in-flight handler
+         * running after we've been freed is impossible.  Safe to call
+         * straight through without __weak (MRC, no __weak available). */
+        [unretainedSelf pumpIterate];
+      });
+      dispatch_resume(s);
+      [_pumpFDSources addObject:[NSValue valueWithPointer:s]];
+    }
+  }
+
+  [self _schedulePumpNextWake:timeout_ms];
+}
+
+- (void)_schedulePumpNextWake:(gint)timeout_ms
+{
+  [_pumpTimer invalidate];
+  [_pumpTimer release];
+  _pumpTimer = nil;
+  NSTimeInterval iv;
+  if (timeout_ms < 0) {
+    /* GLib has nothing scheduled.  A 1-second backstop is a safety net
+     * (if our fd watchers miss anything, we still iterate every
+     * second; in practice they don't miss). */
+    iv = 1.0;
+  } else if (timeout_ms == 0) {
+    iv = 0.0;
+  } else {
+    iv = (NSTimeInterval)timeout_ms / 1000.0;
+  }
+  _pumpTimer = [[NSTimer scheduledTimerWithTimeInterval:iv
+                                                 target:self
+                                               selector:@selector(_pumpTimerFired:)
+                                               userInfo:nil
+                                                repeats:NO] retain];
+  [[NSRunLoop currentRunLoop] addTimer:_pumpTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)_pumpTimerFired:(NSTimer *)timer
 {
   (void)timer;
+  if (!_pumpRunning) return;
   GMainContext *ctx = g_main_context_default();
-  /* Pull off everything that is ready, but do not block. */
   while (g_main_context_iteration(ctx, FALSE)) {
-    /* loop */
+    if (!_pumpRunning) return;
   }
 }
 

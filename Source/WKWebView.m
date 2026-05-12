@@ -24,8 +24,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/* X11 keysym values for a handful of named keys.  Copied here rather
- * than dragging in <X11/keysymdef.h> as a hard build dependency. */
+/* X11 keysym values for named keys.  Copied here rather than dragging
+ * in <X11/keysymdef.h> as a hard build dependency. */
 #define GS_WKKEY_BackSpace 0xff08
 #define GS_WKKEY_Tab       0xff09
 #define GS_WKKEY_Return    0xff0d
@@ -38,7 +38,17 @@
 #define GS_WKKEY_PageDown  0xff56
 #define GS_WKKEY_Home      0xff50
 #define GS_WKKEY_End       0xff57
+#define GS_WKKEY_Insert    0xff63
 #define GS_WKKEY_Delete    0xffff
+#define GS_WKKEY_F1        0xffbe   /* F2..F12 are F1+n */
+#define GS_WKKEY_Shift_L   0xffe1
+#define GS_WKKEY_Shift_R   0xffe2
+#define GS_WKKEY_Control_L 0xffe3
+#define GS_WKKEY_Control_R 0xffe4
+#define GS_WKKEY_Alt_L     0xffe9
+#define GS_WKKEY_Alt_R     0xffea
+#define GS_WKKEY_Meta_L    0xffe7
+#define GS_WKKEY_Meta_R    0xffe8
 
 /* WPE modifier bits we want to convey. */
 #define GS_WK_MOD_CTRL    (1u << 0)
@@ -654,6 +664,12 @@ static uint32_t GSWK_KeysymFromEvent(NSEvent *event)
     case 0x03:                    return GS_WKKEY_Return;
     case 0x1b:                    return GS_WKKEY_Escape;
     case NSDeleteFunctionKey:     return GS_WKKEY_Delete;
+    case NSInsertFunctionKey:     return GS_WKKEY_Insert;
+    case NSF1FunctionKey:  case NSF2FunctionKey:  case NSF3FunctionKey:
+    case NSF4FunctionKey:  case NSF5FunctionKey:  case NSF6FunctionKey:
+    case NSF7FunctionKey:  case NSF8FunctionKey:  case NSF9FunctionKey:
+    case NSF10FunctionKey: case NSF11FunctionKey: case NSF12FunctionKey:
+      return GS_WKKEY_F1 + (uint32_t)(c - NSF1FunctionKey);
     default:
       /* Printable ASCII: keysym == ASCII. */
       if (c >= 0x20 && c < 0x7f) {
@@ -661,12 +677,10 @@ static uint32_t GSWK_KeysymFromEvent(NSEvent *event)
       }
       /* Non-ASCII Unicode: X11 keysyms in the range 0x01000100..
        * 0x0110FFFF are direct Unicode codepoints (X11R6+ convention).
-       * This lets users type accented Latin, Cyrillic, Greek etc.
-       * without requiring an IME.  For CJK input methods we'd need
-       * NSTextInputClient + preedit-string plumbing into WebKit's
-       * WebKitInputMethodContext, which is a separate larger
-       * project. */
-      if (c >= 0x80) {
+       * Lets users type accented Latin, Cyrillic, Greek etc.
+       * without an IME.  CJK preedit composition still needs
+       * NSTextInputClient + WebKitInputMethodContext plumbing. */
+      if (c >= 0x80 && c < NSF1FunctionKey) {
         return 0x01000000u | (uint32_t)c;
       }
       return 0;
@@ -709,6 +723,23 @@ static uint32_t GSWK_KeysymFromEvent(NSEvent *event)
                      modifiers:GSWK_ModsFromEvent(event)
                      timestamp:GSWK_TimestampFromEvent(event)];
   }
+}
+
+/* Standard responder-chain selectors so Edit-menu items wired with
+ * cut: / copy: / paste: routes also use our clipboard plumbing. */
+- (void)cut:(id)sender   { (void)sender; [self _performCutToPasteboard]; }
+- (void)copy:(id)sender  { (void)sender; [self _performCopyToPasteboard]; }
+- (void)paste:(id)sender { (void)sender; [self _performPasteFromPasteboard]; }
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item
+{
+  /* Always enable Cut / Copy / Paste while this view is focused. */
+  SEL action = [item action];
+  if (action == @selector(cut:) || action == @selector(copy:)
+      || action == @selector(paste:)) {
+    return YES;
+  }
+  return YES;
 }
 
 - (void)_performPasteFromPasteboard
@@ -840,6 +871,45 @@ static uint32_t GSWK_KeysymFromEvent(NSEvent *event)
                      modifiers:GSWK_ModsFromEvent(event)
                      timestamp:GSWK_TimestampFromEvent(event)];
   }
+}
+
+/* Modifier-only keypresses (Shift, Control, Alt) don't produce
+ * -keyDown:/-keyUp: events; they come through -flagsChanged: instead.
+ * Some web content (game keyboard handlers, IME triggers, modifier-
+ * aware shortcut detection) needs to see these as key events.
+ *
+ * Note: do not override -performKeyEquivalent: here.  When this view
+ * is the first responder, AppKit also routes the keyDown: path to us
+ * for menu key-equivalents like Cmd+V; intercepting flagsChanged is
+ * safe but we must explicitly fall through to super for menu
+ * key-equivalent matching. */
+- (void)flagsChanged:(NSEvent *)event
+{
+  static NSEventModifierFlags prevMods = 0;
+  NSEventModifierFlags now = [event modifierFlags];
+  NSEventModifierFlags changed = now ^ prevMods;
+  uint32_t timestamp = GSWK_TimestampFromEvent(event);
+  uint32_t mods = GSWK_ModsFromEvent(event);
+
+  struct { NSEventModifierFlags flag; uint32_t keysym; } table[] = {
+    { NSEventModifierFlagShift,   GS_WKKEY_Shift_L },
+    { NSEventModifierFlagControl, GS_WKKEY_Control_L },
+    { NSEventModifierFlagOption,  GS_WKKEY_Alt_L },
+    { NSEventModifierFlagCommand, GS_WKKEY_Meta_L },
+  };
+  for (unsigned i = 0; i < sizeof(table)/sizeof(table[0]); i++) {
+    if (changed & table[i].flag) {
+      BOOL pressed = (now & table[i].flag) != 0;
+      [_backend dispatchKeyCode:table[i].keysym
+                        pressed:pressed
+                      modifiers:mods
+                      timestamp:timestamp];
+    }
+  }
+  prevMods = now;
+  /* Ensure the event continues up the responder chain so AppKit's
+   * menu-key-equivalent matching for Cmd+C / Cmd+V still runs. */
+  [super flagsChanged:event];
 }
 
 
@@ -1055,6 +1125,16 @@ static uint32_t GSWK_KeysymFromEvent(NSEvent *event)
   [_customUserAgent release];
   _customUserAgent = [ua copy];
   [_backend setCustomUserAgent:ua];
+}
+
+- (void)setPageZoom:(CGFloat)zoom
+{
+  [_backend setPageZoom:zoom];
+}
+
+- (CGFloat)pageZoom
+{
+  return [_backend pageZoom];
 }
 
 

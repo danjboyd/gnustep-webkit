@@ -55,6 +55,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, getter=isLoading) BOOL loading;
 @property (nullable, nonatomic, readonly, copy) NSString *customUserAgent;
 @property (nonatomic) BOOL allowsBackForwardNavigationGestures;
+@property (nonatomic) CGFloat pageZoom;
 @property (nonatomic, readonly, strong) WKBackForwardList *backForwardList;
 
 - (void)setCustomUserAgent:(nullable NSString *)userAgent;

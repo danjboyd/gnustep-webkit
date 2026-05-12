@@ -173,6 +173,8 @@ typedef NS_ENUM(NSInteger, GSWebKitPointerEventType) {
 - (BOOL)isLoading;
 - (void)setCustomUserAgent:(NSString *)ua;
 - (NSString *)customUserAgent;
+- (void)setPageZoom:(CGFloat)zoom;
+- (CGFloat)pageZoom;
 
 /* Pixel buffer.  Returns the most recently exported frame as an
  * NSBitmapImageRep (RGBA bytes, premultiplied), or nil if no frame has

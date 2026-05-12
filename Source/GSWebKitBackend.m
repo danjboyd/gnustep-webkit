@@ -73,6 +73,8 @@ NSString * const GSWebKitMouseTargetIsSelection = @"GSWebKitMouseTargetIsSelecti
 - (BOOL)isLoading                                  { return NO; }
 - (void)setCustomUserAgent:(NSString *)ua          { (void)ua; }
 - (NSString *)customUserAgent                      { return nil; }
+- (void)setPageZoom:(CGFloat)z                     { (void)z; }
+- (CGFloat)pageZoom                                { return 1.0; }
 
 - (NSBitmapImageRep *)takeCurrentFrame             { return nil; }
 - (NSSize)currentFrameSize                         { return NSZeroSize; }

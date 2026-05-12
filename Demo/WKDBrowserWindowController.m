@@ -5,6 +5,36 @@
 
 #import "WKDBrowserWindowController.h"
 
+@implementation _WKDAppSchemeHandler
+- (void)webView:(WKWebView *)webView startURLSchemeTask:(id <WKURLSchemeTask>)task
+{
+  (void)webView;
+  NSString *uri = [[[task request] URL] absoluteString];
+  NSString *body = [NSString stringWithFormat:
+      @"<!doctype html><html><body style='font-family:sans-serif'>"
+      @"<h1>Custom scheme handler</h1>"
+      @"<p>WebKit asked the host for this URL:</p>"
+      @"<pre style='background:#eef;padding:8px'>%@</pre>"
+      @"<p>The framework's <code>WKURLSchemeHandler</code> implementation "
+      @"is what produced this page.</p>"
+      @"</body></html>", uri];
+  NSData *data = [body dataUsingEncoding:NSUTF8StringEncoding];
+  NSURLResponse *resp = [[[NSURLResponse alloc]
+      initWithURL:[[task request] URL]
+         MIMEType:@"text/html"
+   expectedContentLength:(NSInteger)[data length]
+   textEncodingName:@"utf-8"] autorelease];
+  [task didReceiveResponse:resp];
+  [task didReceiveData:data];
+  [task didFinish];
+}
+- (void)webView:(WKWebView *)webView stopURLSchemeTask:(id <WKURLSchemeTask>)task
+{
+  (void)webView; (void)task;
+}
+@end
+
+
 @implementation WKDBrowserWindowController
 
 - (instancetype)init
@@ -159,6 +189,9 @@
                                                   object:_stdinHandle];
     [_stdinHandle release];
   }
+  [_findBar release];
+  [_findField release];
+  [_findStatus release];
   [_webView release];
   [_addressField release];
   [_jsField release];
@@ -264,6 +297,38 @@
   [_statusField setAutoresizingMask:NSViewWidthSizable | NSViewMaxYMargin];
   [content addSubview:_statusField];
 
+  /* Find bar — built but hidden by default.  Cmd/Ctrl+F shows it. */
+  _findBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, cb.size.width, 32)];
+  [_findBar setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+  [_findBar setHidden:YES];
+  {
+    NSButton *close = [self _makeButtonAt:NSMakePoint(8, 4)
+                                     width:24
+                                     title:@"×"
+                                    action:@selector(hideFindBar:)];
+    [_findBar addSubview:close];
+    _findField = [[NSTextField alloc] initWithFrame:NSMakeRect(36, 4, 400, 24)];
+    [[_findField cell] setPlaceholderString:@"Find in page (Enter = next, Shift+Enter = previous, Esc = close)"];
+    [_findField setTarget:self];
+    [_findField setAction:@selector(findNext:)];
+    [_findBar addSubview:_findField];
+    NSButton *prev = [self _makeButtonAt:NSMakePoint(444, 4)
+                                    width:36 title:@"◀"
+                                   action:@selector(findPrevious:)];
+    [_findBar addSubview:prev];
+    NSButton *next = [self _makeButtonAt:NSMakePoint(484, 4)
+                                    width:36 title:@"▶"
+                                   action:@selector(findNext:)];
+    [_findBar addSubview:next];
+    _findStatus = [[NSTextField alloc] initWithFrame:NSMakeRect(528, 6, 300, 18)];
+    [_findStatus setEditable:NO];
+    [_findStatus setBezeled:NO];
+    [_findStatus setDrawsBackground:NO];
+    [_findStatus setStringValue:@""];
+    [_findBar addSubview:_findStatus];
+  }
+  [content addSubview:_findBar];
+
   /* Web view fills the rest. */
   NSRect webFrame = NSMakeRect(8, 36, cb.size.width - 16,
                                cb.size.height - 36 - 8 - 32 - 32);
@@ -279,6 +344,11 @@
        injectionTime:WKUserScriptInjectionTimeAtDocumentStart
     forMainFrameOnly:YES] autorelease];
   [ucc addUserScript:boot];
+
+  /* Register a custom myapp:// scheme handler so the Demo menu can
+   * exercise the WKURLSchemeHandler / WKURLSchemeTask plumbing. */
+  _WKDAppSchemeHandler *scheme = [[[_WKDAppSchemeHandler alloc] init] autorelease];
+  [config setURLSchemeHandler:scheme forURLScheme:@"myapp"];
 
   _webView = [[WKWebView alloc] initWithFrame:webFrame configuration:config];
   [_webView setNavigationDelegate:(id <WKNavigationDelegate>)self];
@@ -353,6 +423,164 @@
 {
   (void)sender;
   [_webView stopLoading];
+}
+
+/* Esc in the find field (or anywhere the find bar is the first
+ * responder) closes the find bar.  NSTextField forwards Esc as
+ * cancelOperation: up the responder chain. */
+- (void)cancelOperation:(id)sender
+{
+  (void)sender;
+  if (_findBarVisible) {
+    [self hideFindBar:nil];
+  }
+}
+
+- (void)showFindBar:(id)sender
+{
+  (void)sender;
+  if (_findBarVisible) {
+    [[self window] makeFirstResponder:_findField];
+    return;
+  }
+  _findBarVisible = YES;
+  NSView *content = [[self window] contentView];
+  NSRect cb = [content bounds];
+  /* Place the find bar just below the JS row.  Web view shrinks. */
+  CGFloat findBarY = cb.size.height - 36 - 32 - 32;
+  [_findBar setFrame:NSMakeRect(0, findBarY, cb.size.width, 32)];
+  [_findBar setHidden:NO];
+  /* Shrink web view by 32px. */
+  NSRect wf = [_webView frame];
+  wf.size.height -= 32;
+  [_webView setFrame:wf];
+  [[self window] makeFirstResponder:_findField];
+}
+
+- (void)hideFindBar:(id)sender
+{
+  (void)sender;
+  if (!_findBarVisible) return;
+  _findBarVisible = NO;
+  [_findBar setHidden:YES];
+  NSRect wf = [_webView frame];
+  wf.size.height += 32;
+  [_webView setFrame:wf];
+  [_findStatus setStringValue:@""];
+}
+
+- (void)findNext:(id)sender
+{
+  (void)sender;
+  NSString *q = [_findField stringValue];
+  if ([q length] == 0) return;
+  WKFindConfiguration *cfg = [[[WKFindConfiguration alloc] init] autorelease];
+  [cfg setBackwards:NO];
+  [cfg setWraps:YES];
+  [_webView findString:q
+         configuration:cfg
+     completionHandler:^(WKFindResult *r) {
+    [_findStatus setStringValue:[r matchFound] ? @"Found" : @"Not found"];
+  }];
+}
+
+- (void)findPrevious:(id)sender
+{
+  (void)sender;
+  NSString *q = [_findField stringValue];
+  if ([q length] == 0) return;
+  WKFindConfiguration *cfg = [[[WKFindConfiguration alloc] init] autorelease];
+  [cfg setBackwards:YES];
+  [cfg setWraps:YES];
+  [_webView findString:q
+         configuration:cfg
+     completionHandler:^(WKFindResult *r) {
+    [_findStatus setStringValue:[r matchFound] ? @"Found" : @"Not found"];
+  }];
+}
+
+- (void)zoomIn:(id)sender    { (void)sender; [_webView setPageZoom:[_webView pageZoom] * 1.1]; }
+- (void)zoomOut:(id)sender   { (void)sender; [_webView setPageZoom:[_webView pageZoom] / 1.1]; }
+- (void)zoomReset:(id)sender { (void)sender; [_webView setPageZoom:1.0]; }
+
+- (void)demoFileChooser:(id)sender
+{
+  (void)sender;
+  NSString *html = @"<!doctype html><html><body style='font-family:sans-serif'>"
+                   @"<h1>File chooser demo</h1>"
+                   @"<p>Clicking the button below pops up <code>NSOpenPanel</code> "
+                   @"via the framework's <code>run-file-chooser</code> bridge.</p>"
+                   @"<input id=f type=file multiple>"
+                   @"<pre id=out style='background:#eef;padding:8px'></pre>"
+                   @"<script>"
+                   @"document.getElementById('f').addEventListener('change',function(e){"
+                   @"  var names=[]; for(var i=0;i<this.files.length;i++)names.push(this.files[i].name);"
+                   @"  document.getElementById('out').textContent='Selected: '+names.join(', ');"
+                   @"});"
+                   @"</script></body></html>";
+  [_webView loadHTMLString:html baseURL:nil];
+}
+
+- (void)demoCustomScheme:(id)sender
+{
+  (void)sender;
+  [_webView loadRequest:[NSURLRequest requestWithURL:
+      [NSURL URLWithString:@"myapp://hello/world?from=demo"]]];
+}
+
+- (void)demoHistory:(id)sender
+{
+  (void)sender;
+  WKBackForwardList *list = [_webView backForwardList];
+  NSMutableString *html = [NSMutableString stringWithString:
+      @"<!doctype html><html><body style='font-family:sans-serif'>"
+      @"<h1>Back-Forward History</h1>"];
+  WKBackForwardListItem *cur = [list currentItem];
+  [html appendString:@"<h2>Back</h2><ol reversed>"];
+  NSArray *back = [list backList];
+  for (WKBackForwardListItem *it in back) {
+    [html appendFormat:@"<li><a href='%@'>%@</a></li>",
+                        [[it URL] absoluteString],
+                        [it title] ?: [[it URL] absoluteString]];
+  }
+  [html appendString:@"</ol>"];
+  if (cur != nil) {
+    [html appendFormat:@"<h2>Current</h2><p><a href='%@'>%@</a></p>",
+                        [[cur URL] absoluteString],
+                        [cur title] ?: [[cur URL] absoluteString]];
+  }
+  [html appendString:@"<h2>Forward</h2><ol>"];
+  for (WKBackForwardListItem *it in [list forwardList]) {
+    [html appendFormat:@"<li><a href='%@'>%@</a></li>",
+                        [[it URL] absoluteString],
+                        [it title] ?: [[it URL] absoluteString]];
+  }
+  [html appendString:@"</ol></body></html>"];
+  [_webView loadHTMLString:html baseURL:nil];
+}
+
+- (void)demoCookieInspector:(id)sender
+{
+  (void)sender;
+  WKHTTPCookieStore *cs = [[WKWebsiteDataStore defaultDataStore] httpCookieStore];
+  [cs getAllCookies:^(NSArray *cookies) {
+    NSMutableString *html = [NSMutableString stringWithString:
+        @"<!doctype html><html><body style='font-family:sans-serif'>"
+        @"<h1>Cookie inspector</h1>"];
+    [html appendFormat:@"<p>%lu cookies via WKHTTPCookieStore:</p>",
+                       (unsigned long)[cookies count]];
+    [html appendString:@"<table border=1 cellpadding=4 style='border-collapse:collapse'>"
+                       @"<tr><th>Domain</th><th>Name</th><th>Path</th><th>Secure</th></tr>"];
+    NSEnumerator *e = [cookies objectEnumerator];
+    NSHTTPCookie *c;
+    while ((c = [e nextObject]) != nil) {
+      [html appendFormat:@"<tr><td>%@</td><td>%@</td><td>%@</td><td>%@</td></tr>",
+                          [c domain], [c name], [c path],
+                          [c isSecure] ? @"yes" : @"no"];
+    }
+    [html appendString:@"</table></body></html>"];
+    [_webView loadHTMLString:html baseURL:nil];
+  }];
 }
 
 - (void)evaluateJS:(id)sender
